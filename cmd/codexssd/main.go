@@ -117,6 +117,12 @@ func cmdStatus(args []string) int {
 	return 0
 }
 
+// isCodexRunning is the process-check used by the file-mutating commands. It is
+// a package variable so tests can substitute a deterministic stub, making the
+// safety gate (refuse while Codex is running) verifiable on any machine without
+// a real Codex process or dependence on the host's process table.
+var isCodexRunning = codex.IsCodexRunning
+
 // cmdClean implements `codexssd clean`.
 //
 // Default is a read-only dry run. `--yes` moves Codex's own logs aside into the
@@ -148,7 +154,7 @@ func cmdClean(args []string) int {
 		return 1
 	}
 
-	running, runErr := codex.IsCodexRunning()
+	running, runErr := isCodexRunning()
 	supported := runErr != codex.ErrUnsupportedPlatform
 
 	if !*yes {
@@ -273,7 +279,7 @@ func cmdRestore(args []string) int {
 	}
 
 	// Restoring overwrites the live log location, so refuse while Codex runs.
-	running, runErr := codex.IsCodexRunning()
+	running, runErr := isCodexRunning()
 	if runErr == codex.ErrUnsupportedPlatform {
 		fmt.Fprintln(os.Stderr, "codexssd: cannot verify Codex is closed on this platform; refusing to restore.")
 		return 1

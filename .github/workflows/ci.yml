@@ -37,8 +37,5 @@ jobs:
       - name: Build
         run: go build ./...
 
-      - name: Unit tests
+      - name: Tests (unit + hermetic clean/restore integration)
         run: go test ./...
-
-      - name: End-to-end clean/restore (safe sandbox)
-        run: ./scripts/e2e-clean-restore.sh
