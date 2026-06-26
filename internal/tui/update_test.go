@@ -81,8 +81,11 @@ func sampleLoaded() loadedMsg {
 		},
 		running:   false,
 		supported: true,
-		plan:      cleaner.Plan{TotalBytes: 200 * 1024 * 1024},
-		backups:   nil,
+		plan: cleaner.Plan{
+			Items:      []cleaner.PlanItem{{Name: "logs_2.sqlite", Size: 200 * 1024 * 1024}},
+			TotalBytes: 200 * 1024 * 1024,
+		},
+		backups: nil,
 	}
 }
 

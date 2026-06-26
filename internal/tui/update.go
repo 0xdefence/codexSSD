@@ -59,6 +59,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // handleKey routes a keypress. Global keys first, then per-state keys.
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Close help overlay with esc before any other routing.
+	if m.showHelp && msg.String() == "esc" {
+		m.showHelp = false
+		return m, nil
+	}
+
 	// Global keys.
 	switch msg.String() {
 	case "ctrl+c", "q":
@@ -133,7 +139,7 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.blockedReason = "Codex appears to be running. Close it first, then try again."
 			return m, nil
 		}
-		if m.plan.TotalBytes == 0 {
+		if m.plan.Empty() {
 			m.state = stateResult
 			m.resultMsg = "Nothing to tidy — no Codex logs are present."
 			m.resultErr = nil
