@@ -45,3 +45,33 @@ func TestRenderPlanWithItemsAndSafety(t *testing.T) {
 		t.Errorf("plan output should tell the user to run --yes:\n%s", buf.String())
 	}
 }
+
+func TestRenderBackupsEmpty(t *testing.T) {
+	var buf bytes.Buffer
+	renderBackups(&buf, nil)
+	if !strings.Contains(buf.String(), "No backups") {
+		t.Errorf("empty backups output missing message:\n%s", buf.String())
+	}
+}
+
+func TestRenderBackupsLists(t *testing.T) {
+	var buf bytes.Buffer
+	backups := []cleaner.Backup{
+		{
+			Dir: "/x/.codex/codexssd-backups/20260626-143000",
+			Manifest: cleaner.Manifest{
+				Items: []cleaner.ManifestItem{
+					{Name: "logs_2.sqlite", OriginalPath: "/x/.codex/logs_2.sqlite", Size: 2048},
+				},
+			},
+		},
+	}
+	renderBackups(&buf, backups)
+	out := buf.String()
+	if !strings.Contains(out, "20260626-143000") {
+		t.Errorf("backups output missing id:\n%s", out)
+	}
+	if !strings.Contains(out, "2.0 KiB") {
+		t.Errorf("backups output missing total size:\n%s", out)
+	}
+}
