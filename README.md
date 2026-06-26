@@ -74,8 +74,7 @@ go install github.com/0xdefence/codexssd/cmd/codexssd@latest
 
 ## Usage (today)
 
-Only the read-only `status` command is implemented so far. It touches nothing,
-moves nothing, and deletes nothing.
+### `status` — read-only report (touches nothing)
 
 ```bash
 codexssd status          # human-readable report of Codex's log files + total
@@ -98,6 +97,34 @@ Total:                        9.5 GiB
 If you don't have a `~/.codex` directory, `status` says so politely and exits
 cleanly — there's nothing to report.
 
+### `clean` — move logs aside (dry-run by default, never deletes)
+
+```bash
+codexssd clean           # dry run — shows what would be moved, touches nothing
+codexssd clean --yes     # actually moves Codex's own logs to a recoverable bin
+codexssd clean --json    # dry-run output as JSON
+```
+
+`clean` is **dry-run by default** — no files are touched until you pass `--yes`.
+With `--yes`, Codex's logs are moved to a timestamped recycling bin inside
+`~/.codex/codexssd-backups/`. Nothing is ever hard-deleted; you can restore any
+backup at any time.
+
+`clean --yes` refuses to act if Codex appears to be running (it checks your
+running processes first), so it will never race with an active agent session.
+
+### `restore` — move cleaned logs back
+
+```bash
+codexssd restore             # list recoverable backups
+codexssd restore <backup-id> # restore a specific backup to its original location
+codexssd restore --json      # list backups as JSON
+```
+
+`restore` is the undo for `clean`. It moves the files back from the recycling
+bin to their original `~/.codex/` locations. Like `clean --yes`, it refuses to
+act if Codex is running.
+
 ## Phase 1 scope
 
 This repo is at the start of **Phase 1 — The Watchdog (the safe core)**. The
@@ -108,7 +135,8 @@ Phase 1 covers (read-only first, safe actions later):
 
 - Watching Codex and reporting its log-file sizes — **`status` is done**
 - Plain-language warnings when disk/memory use gets alarming
-- Safely clearing Codex's *own* logs into a recoverable recycling bin
+- Safely clearing Codex's *own* logs into a recoverable recycling bin — **`clean` is done**
+- Restoring cleaned logs from the recycling bin — **`restore` is done**
 - A "please behave" `AGENTS.md` rules installer
 - Honest self-reporting of CodexSSD's own footprint
 
