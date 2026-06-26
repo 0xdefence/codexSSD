@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -118,5 +120,100 @@ func TestLastTidyFromBackups(t *testing.T) {
 	got, ok := m.lastTidy()
 	if !ok || !got.Equal(when) {
 		t.Errorf("lastTidy = %v ok=%v, want %v", got, ok, when)
+	}
+}
+
+func TestCleanKeyBlockedWhileRunning(t *testing.T) {
+	m, _ := step(New(), sampleLoaded()) // not running, has plan
+	m.running = true                    // Codex started
+	m, cmd := step(m, key("c"))
+	if m.state != stateBlocked {
+		t.Fatalf("state = %v, want stateBlocked", m.state)
+	}
+	if cmd != nil {
+		t.Error("pressing c while running should not dispatch a command")
+	}
+}
+
+func TestCleanKeyOpensConfirm(t *testing.T) {
+	m, _ := step(New(), sampleLoaded()) // not running, 200 MiB plan
+	m, _ = step(m, key("c"))
+	if m.state != stateConfirmClean {
+		t.Fatalf("state = %v, want stateConfirmClean", m.state)
+	}
+}
+
+func TestConfirmCleanYesDispatchesAndResult(t *testing.T) {
+	m, _ := step(New(), sampleLoaded())
+	m, _ = step(m, key("c")) // -> confirm
+	m, cmd := step(m, key("y"))
+	if m.state != stateCleaning {
+		t.Fatalf("state = %v, want stateCleaning", m.state)
+	}
+	if cmd == nil {
+		t.Fatal("confirm-yes should dispatch cleanCmd")
+	}
+	// Feed a successful result.
+	m, _ = step(m, cleanResultMsg{dest: "/b/20260626-100000", movedBytes: 200 * 1024 * 1024})
+	if m.state != stateResult {
+		t.Fatalf("state = %v, want stateResult", m.state)
+	}
+	if !strings.Contains(m.View(), "200.0 MiB") {
+		t.Errorf("result view missing moved size:\n%s", m.View())
+	}
+}
+
+func TestConfirmCleanNoReturnsToDashboard(t *testing.T) {
+	m, _ := step(New(), sampleLoaded())
+	m, _ = step(m, key("c"))
+	m, _ = step(m, key("n"))
+	if m.state != stateDashboard {
+		t.Errorf("state = %v, want stateDashboard", m.state)
+	}
+}
+
+// cleanCmd must NOT touch the engine while Codex is running.
+func TestCleanCmdGateRefusesWhileRunning(t *testing.T) {
+	origRun, origApply := isCodexRunning, applyPlan
+	t.Cleanup(func() { isCodexRunning, applyPlan = origRun, origApply })
+
+	applied := false
+	isCodexRunning = func() (bool, error) { return true, nil }
+	applyPlan = func(p cleaner.Plan) (string, int64, error) { applied = true; return "", 0, nil }
+
+	msg := cleanCmd()
+	if _, ok := msg.(blockedMsg); !ok {
+		t.Fatalf("cleanCmd returned %T, want blockedMsg", msg)
+	}
+	if applied {
+		t.Error("applyPlan was called while Codex running — gate bypassed")
+	}
+}
+
+// cleanCmd moves logs when Codex is not running.
+func TestCleanCmdMovesWhenNotRunning(t *testing.T) {
+	origDir, origRun := codexDir, isCodexRunning
+	t.Cleanup(func() { codexDir, isCodexRunning = origDir, origRun })
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "logs_2.sqlite"), make([]byte, 128), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	codexDir = func() (string, error) { return dir, nil }
+	isCodexRunning = func() (bool, error) { return false, nil }
+
+	msg := cleanCmd()
+	res, ok := msg.(cleanResultMsg)
+	if !ok {
+		t.Fatalf("cleanCmd returned %T, want cleanResultMsg", msg)
+	}
+	if res.err != nil {
+		t.Fatalf("clean failed: %v", res.err)
+	}
+	if res.movedBytes != 128 {
+		t.Errorf("movedBytes = %d, want 128", res.movedBytes)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "logs_2.sqlite")); !os.IsNotExist(err) {
+		t.Error("log was not moved aside")
 	}
 }

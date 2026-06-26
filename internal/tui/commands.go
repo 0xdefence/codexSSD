@@ -25,6 +25,47 @@ var (
 	}
 )
 
+// cleanResultMsg reports the outcome of a tidy.
+type cleanResultMsg struct {
+	dest       string
+	movedBytes int64
+	err        error
+}
+
+// blockedMsg means an action was refused because Codex is running or the
+// platform can't be checked.
+type blockedMsg struct {
+	reason string
+}
+
+// cleanCmd re-checks that Codex is stopped (authoritative gate), then moves the
+// logs aside. It NEVER calls applyPlan while Codex is running.
+func cleanCmd() tea.Msg {
+	running, runErr := isCodexRunning()
+	if runErr == codex.ErrUnsupportedPlatform {
+		return blockedMsg{reason: "This platform can't verify Codex is closed, so tidying is disabled here."}
+	}
+	if runErr != nil {
+		return cleanResultMsg{err: runErr}
+	}
+	if running {
+		return blockedMsg{reason: "Codex appears to be running. Close it first, then try again."}
+	}
+	dir, err := codexDir()
+	if err != nil {
+		return cleanResultMsg{err: err}
+	}
+	plan, err := planLogs(dir)
+	if err != nil {
+		return cleanResultMsg{err: err}
+	}
+	if plan.Empty() {
+		return cleanResultMsg{dest: "", movedBytes: 0}
+	}
+	dest, moved, err := applyPlan(plan)
+	return cleanResultMsg{dest: dest, movedBytes: moved, err: err}
+}
+
 // loadedMsg carries a full status snapshot for the dashboard.
 type loadedMsg struct {
 	report    codex.LogReport

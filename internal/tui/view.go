@@ -16,7 +16,18 @@ func (m Model) View() string {
 	if m.showHelp {
 		return m.renderHelp()
 	}
-	return m.renderDashboard()
+	switch m.state {
+	case stateConfirmClean:
+		return m.renderConfirmClean()
+	case stateCleaning:
+		return m.renderWorking("Tidying Codex logs aside…")
+	case stateResult:
+		return m.renderResult()
+	case stateBlocked:
+		return m.renderBlocked()
+	default:
+		return m.renderDashboard()
+	}
 }
 
 func (m Model) renderDashboard() string {
@@ -86,5 +97,44 @@ func (m Model) renderHelp() string {
 	fmt.Fprintln(&b, "q    quit")
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "press ? or esc to close")
+	return b.String()
+}
+
+func (m Model) renderConfirmClean() string {
+	var b strings.Builder
+	fmt.Fprintln(&b, titleStyle.Render("Tidy Codex logs"))
+	fmt.Fprintln(&b)
+	fmt.Fprintf(&b, "Move %s of Codex's own logs into a recoverable bin?\n", codex.HumanBytes(m.report.TotalBytes))
+	fmt.Fprintln(&b, "Nothing is deleted — you can restore them any time.")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "y yes · n no")
+	return b.String()
+}
+
+func (m Model) renderWorking(label string) string {
+	return titleStyle.Render("CodexSSD") + "\n\n" + label + "\n"
+}
+
+func (m Model) renderResult() string {
+	var b strings.Builder
+	fmt.Fprintln(&b, titleStyle.Render("CodexSSD"))
+	fmt.Fprintln(&b)
+	if m.resultErr != nil {
+		fmt.Fprintf(&b, "Something went wrong: %v\n", m.resultErr)
+	} else {
+		fmt.Fprintln(&b, m.resultMsg)
+	}
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "enter return to dashboard")
+	return b.String()
+}
+
+func (m Model) renderBlocked() string {
+	var b strings.Builder
+	fmt.Fprintln(&b, titleStyle.Render("Can't do that right now"))
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, m.blockedReason)
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "enter return to dashboard")
 	return b.String()
 }
