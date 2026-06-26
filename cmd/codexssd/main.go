@@ -3,7 +3,8 @@
 // memory, warns in plain language, safely tidies Codex's OWN log files into a
 // recoverable recycling bin, and flags other clutter for the user to decide on.
 //
-// Phase 1 implements only the read-only `status` command.
+// Phase 1 so far implements the read-only `status` command plus `clean` and
+// `restore` for Codex's own log files.
 package main
 
 import (
@@ -148,11 +149,15 @@ func cmdClean(args []string) int {
 
 	if !*yes {
 		if *jsonOut {
-			return emitJSON(map[string]any{
+			out := map[string]any{
 				"plan":               plan,
 				"codex_running":      running,
 				"platform_supported": supported,
-			})
+			}
+			if runErr != nil && supported {
+				out["check_error"] = runErr.Error()
+			}
+			return emitJSON(out)
 		}
 		renderPlan(os.Stdout, plan, running, supported)
 		return 0
