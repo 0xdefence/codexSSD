@@ -37,6 +37,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.resultMsg = fmt.Sprintf("Tidied %s of Codex logs aside.\nBackup: %s\nNothing was deleted — restore any time.", codex.HumanBytes(msg.movedBytes), msg.dest)
 		}
 		return m, nil
+	case restoreResultMsg:
+		m.state = stateResult
+		if msg.err != nil {
+			m.resultErr = msg.err
+			m.resultMsg = ""
+		} else {
+			m.resultErr = nil
+			m.resultMsg = fmt.Sprintf("Restored backup %s to your Codex folder.", msg.id)
+		}
+		return m, nil
 	case blockedMsg:
 		m.state = stateBlocked
 		m.blockedReason = msg.reason
@@ -66,6 +76,34 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "y":
 			m.state = stateCleaning
 			return m, cleanCmd
+		case "n", "esc":
+			m.state = stateDashboard
+			return m, nil
+		}
+	case stateRestoreList:
+		switch msg.String() {
+		case "up":
+			if m.selected > 0 {
+				m.selected--
+			}
+			return m, nil
+		case "down":
+			if m.selected < len(m.backups)-1 {
+				m.selected++
+			}
+			return m, nil
+		case "enter":
+			m.state = stateConfirmRestore
+			return m, nil
+		case "esc":
+			m.state = stateDashboard
+			return m, nil
+		}
+	case stateConfirmRestore:
+		switch msg.String() {
+		case "y":
+			m.state = stateRestoring
+			return m, restoreCmd(m.backups[m.selected].Dir)
 		case "n", "esc":
 			m.state = stateDashboard
 			return m, nil
@@ -102,6 +140,16 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.state = stateConfirmClean
+		return m, nil
+	case "r":
+		if len(m.backups) == 0 {
+			m.state = stateResult
+			m.resultMsg = "No backups to restore — nothing has been tidied yet."
+			m.resultErr = nil
+			return m, nil
+		}
+		m.selected = 0
+		m.state = stateRestoreList
 		return m, nil
 	}
 	return m, nil

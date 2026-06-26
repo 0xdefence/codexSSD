@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"path/filepath"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -65,6 +66,34 @@ func cleanCmd() tea.Msg {
 	dest, moved, err := applyPlan(plan)
 	return cleanResultMsg{dest: dest, movedBytes: moved, err: err}
 }
+
+// restoreResultMsg reports the outcome of a restore.
+type restoreResultMsg struct {
+	id  string
+	err error
+}
+
+// restoreCmd re-checks that Codex is stopped, then restores the backup at dir.
+// It NEVER calls restoreBackup while Codex is running.
+func restoreCmd(dir string) tea.Cmd {
+	return func() tea.Msg {
+		running, runErr := isCodexRunning()
+		if runErr == codex.ErrUnsupportedPlatform {
+			return blockedMsg{reason: "This platform can't verify Codex is closed, so restoring is disabled here."}
+		}
+		if runErr != nil {
+			return restoreResultMsg{err: runErr}
+		}
+		if running {
+			return blockedMsg{reason: "Codex appears to be running. Close it first, then try again."}
+		}
+		err := restoreBackup(dir)
+		return restoreResultMsg{id: filepathBase(dir), err: err}
+	}
+}
+
+// filepathBase wraps filepath.Base for use in view rendering.
+func filepathBase(p string) string { return filepath.Base(p) }
 
 // loadedMsg carries a full status snapshot for the dashboard.
 type loadedMsg struct {

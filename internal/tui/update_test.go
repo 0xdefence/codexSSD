@@ -190,6 +190,75 @@ func TestCleanCmdGateRefusesWhileRunning(t *testing.T) {
 	}
 }
 
+func loadedWithBackup() loadedMsg {
+	msg := sampleLoaded()
+	msg.backups = []cleaner.Backup{{
+		Dir:      "/home/u/.codex/codexssd-backups/20260626-100000",
+		Manifest: cleaner.Manifest{MovedAt: time.Date(2026, 6, 26, 10, 0, 0, 0, time.UTC)},
+	}}
+	return msg
+}
+
+func TestRestoreKeyOpensListWhenBackupsExist(t *testing.T) {
+	m, _ := step(New(), loadedWithBackup())
+	m, _ = step(m, key("r"))
+	if m.state != stateRestoreList {
+		t.Fatalf("state = %v, want stateRestoreList", m.state)
+	}
+	if !strings.Contains(m.View(), "20260626-100000") {
+		t.Errorf("restore list view missing backup id:\n%s", m.View())
+	}
+}
+
+func TestRestoreKeyNoBackupsShowsResult(t *testing.T) {
+	m, _ := step(New(), sampleLoaded()) // no backups
+	m, _ = step(m, key("r"))
+	if m.state != stateResult {
+		t.Fatalf("state = %v, want stateResult", m.state)
+	}
+	if !strings.Contains(m.View(), "No backups") {
+		t.Errorf("expected a 'no backups' message:\n%s", m.View())
+	}
+}
+
+func TestRestoreConfirmYesDispatches(t *testing.T) {
+	m, _ := step(New(), loadedWithBackup())
+	m, _ = step(m, key("r"))     // list
+	m, _ = step(m, key("enter")) // select -> confirm
+	if m.state != stateConfirmRestore {
+		t.Fatalf("state = %v, want stateConfirmRestore", m.state)
+	}
+	m, cmd := step(m, key("y"))
+	if m.state != stateRestoring {
+		t.Fatalf("state = %v, want stateRestoring", m.state)
+	}
+	if cmd == nil {
+		t.Fatal("confirm-yes should dispatch restoreCmd")
+	}
+	m, _ = step(m, restoreResultMsg{id: "20260626-100000"})
+	if m.state != stateResult {
+		t.Fatalf("state = %v, want stateResult", m.state)
+	}
+}
+
+// restoreCmd must NOT touch the engine while Codex is running.
+func TestRestoreCmdGateRefusesWhileRunning(t *testing.T) {
+	origRun, origRestore := isCodexRunning, restoreBackup
+	t.Cleanup(func() { isCodexRunning, restoreBackup = origRun, origRestore })
+
+	called := false
+	isCodexRunning = func() (bool, error) { return true, nil }
+	restoreBackup = func(dir string) error { called = true; return nil }
+
+	msg := restoreCmd("/some/backup")()
+	if _, ok := msg.(blockedMsg); !ok {
+		t.Fatalf("restoreCmd returned %T, want blockedMsg", msg)
+	}
+	if called {
+		t.Error("restoreBackup was called while Codex running — gate bypassed")
+	}
+}
+
 // cleanCmd moves logs when Codex is not running.
 func TestCleanCmdMovesWhenNotRunning(t *testing.T) {
 	origDir, origRun := codexDir, isCodexRunning

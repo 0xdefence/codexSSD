@@ -21,6 +21,12 @@ func (m Model) View() string {
 		return m.renderConfirmClean()
 	case stateCleaning:
 		return m.renderWorking("Tidying Codex logs aside…")
+	case stateRestoreList:
+		return m.renderRestoreList()
+	case stateConfirmRestore:
+		return m.renderConfirmRestore()
+	case stateRestoring:
+		return m.renderWorking("Restoring…")
 	case stateResult:
 		return m.renderResult()
 	case stateBlocked:
@@ -126,6 +132,37 @@ func (m Model) renderResult() string {
 	}
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "enter return to dashboard")
+	return b.String()
+}
+
+func (m Model) renderRestoreList() string {
+	var b strings.Builder
+	fmt.Fprintln(&b, titleStyle.Render("Restore a backup"))
+	fmt.Fprintln(&b)
+	for i, bk := range m.backups {
+		cursor := "  "
+		if i == m.selected {
+			cursor = "> "
+		}
+		var total int64
+		for _, it := range bk.Manifest.Items {
+			total += it.Size
+		}
+		fmt.Fprintf(&b, "%s%-18s %10s\n", cursor, filepathBase(bk.Dir), codex.HumanBytes(total))
+	}
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "↑/↓ choose · enter select · esc back")
+	return b.String()
+}
+
+func (m Model) renderConfirmRestore() string {
+	var b strings.Builder
+	id := filepathBase(m.backups[m.selected].Dir)
+	fmt.Fprintln(&b, titleStyle.Render("Restore backup"))
+	fmt.Fprintln(&b)
+	fmt.Fprintf(&b, "Move the logs in backup %s back to your Codex folder?\n", id)
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "y yes · n no")
 	return b.String()
 }
 
