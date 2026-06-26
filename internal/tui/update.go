@@ -9,6 +9,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		return m, nil
+	case loadedMsg:
+		m.report = msg.report
+		m.running = msg.running
+		m.supported = msg.supported
+		m.runErr = msg.runErr
+		m.loadErr = msg.loadErr
+		m.plan = msg.plan
+		m.backups = msg.backups
+		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}

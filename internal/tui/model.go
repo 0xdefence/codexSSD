@@ -8,6 +8,8 @@
 package tui
 
 import (
+	"time"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/0xdefence/codexssd/internal/cleaner"
@@ -61,9 +63,27 @@ func New() Model {
 	return Model{state: stateDashboard}
 }
 
-// Init implements tea.Model. (Task 2 returns loadCmd here.)
+// Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	return nil
+	return loadCmd
+}
+
+// deadweight reports whether the Codex logs are large enough to emphasize.
+func (m Model) deadweight() bool {
+	return m.report.TotalBytes >= deadweightThreshold
+}
+
+// lastTidy returns the most recent backup time, if any backups exist.
+func (m Model) lastTidy() (time.Time, bool) {
+	var newest time.Time
+	found := false
+	for _, b := range m.backups {
+		if b.Manifest.MovedAt.After(newest) {
+			newest = b.Manifest.MovedAt
+			found = true
+		}
+	}
+	return newest, found
 }
 
 // Run launches the interactive app. Called by main when no subcommand is given.
