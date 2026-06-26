@@ -67,3 +67,12 @@ records. It uses a simple plain-text file instead. Why? Because the original
 problem we're solving is partly *caused* by a tool writing to a database too
 aggressively. It would look absurd — and be hypocritical — for the tool that
 guards against that to do the same thing. CodexSSD must stay featherweight.
+
+## One allowed dependency family: the interactive UI
+
+CodexSSD's interactive app (`codexssd` with no subcommand) is built with the
+charmbracelet TUI libraries (Bubble Tea, Lip Gloss). These are the only
+third-party dependencies, and they are confined to `internal/tui`. Everything
+else — the engine that watches files and moves logs — stays standard-library
+only. Go still links it all into a single static binary, so the "one file you
+just run" promise is unchanged.

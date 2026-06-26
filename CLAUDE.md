@@ -39,6 +39,8 @@ machine. Any change that weakens them is wrong by definition.
 
 ## Current state
 
+`codexssd` with no arguments now launches the interactive dashboard (`internal/tui`).
+
 Phase 1, three commands implemented:
 
 - **`status`** — 100% read-only (`os.Stat` on Codex's known log files; supports
@@ -76,8 +78,9 @@ lowercase `codexssd` (Go module paths are conventionally lowercase). Module path
 
 ## Conventions
 
-- Plain `flag` package for CLI; no third-party deps unless there's a strong
-  reason (single small binary is a product promise — see `docs/stack.md`).
+- No third-party deps in the engine packages (single small binary is a product
+  promise — see `docs/stack.md`). The ONE exception: the interactive app in
+  `internal/tui` uses the charmbracelet libraries (Bubble Tea, Lip Gloss).
 - Pure, testable functions take inputs explicitly (e.g. `ScanLogs(dir)` rather
   than reading `$HOME` internally) so tests can use `t.TempDir()`.
 - Human-readable sizes use binary units (KiB/MiB/GiB) via `codex.HumanBytes`.
