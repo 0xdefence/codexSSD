@@ -18,6 +18,7 @@ import (
 
 	"github.com/0xdefence/codexssd/internal/cleaner"
 	"github.com/0xdefence/codexssd/internal/codex"
+	"github.com/0xdefence/codexssd/internal/tui"
 )
 
 const usage = `codexssd - a low-write local watchdog for AI coding agents
@@ -43,8 +44,11 @@ func main() {
 
 func run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprint(os.Stderr, usage)
-		return 2
+		if err := tui.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "codexssd: %v\n", err)
+			return 1
+		}
+		return 0
 	}
 
 	cmd, rest := args[0], args[1:]
