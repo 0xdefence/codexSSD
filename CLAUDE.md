@@ -39,10 +39,19 @@ machine. Any change that weakens them is wrong by definition.
 
 ## Current state
 
-Phase 1, first slice. Only `codexssd status` is implemented, and it is **100%
-read-only** (locates `~/.codex`, `os.Stat`s the known log files, prints sizes +
-total; supports `--json`). Everything else (`monitor`, `cleaner`, `agent`,
-`recorder`, `self`) is a documented stub with a package comment and no logic yet.
+Phase 1, three commands implemented:
+
+- **`status`** — 100% read-only (`os.Stat` on Codex's known log files; supports
+  `--json`).
+- **`clean`** — dry-run by default; with `--yes` moves Codex's own logs aside to
+  a recoverable recycling bin via `internal/cleaner`. Refuses if Codex is
+  running. Supports `--json`.
+- **`restore`** — lists recoverable backups; with a backup id moves files back to
+  their original `~/.codex/` location. Refuses if Codex is running. Supports
+  `--json`.
+
+Everything else (`watch`, `install-agent`, `self`) is a documented stub with a
+package comment and no logic yet.
 
 When implementing a new command, keep read-only behavior read-only, and keep
 file-mutating behavior confined to `internal/cleaner` acting only on the
