@@ -294,6 +294,13 @@ func cmdRestore(args []string) int {
 				fmt.Fprintf(os.Stderr, "codexssd: restore failed: %v\n", err)
 				return 1
 			}
+			if *jsonOut {
+				return emitJSON(map[string]any{
+					"status":    "restored",
+					"id":        id,
+					"codex_dir": dir,
+				})
+			}
 			fmt.Printf("Restored backup %s to %s.\n", id, dir)
 			return 0
 		}
