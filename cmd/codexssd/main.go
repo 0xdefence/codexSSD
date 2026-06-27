@@ -20,6 +20,8 @@ import (
 	"github.com/0xdefence/codexssd/internal/agent"
 	"github.com/0xdefence/codexssd/internal/cleaner"
 	"github.com/0xdefence/codexssd/internal/codex"
+	"github.com/0xdefence/codexssd/internal/recorder"
+	"github.com/0xdefence/codexssd/internal/self"
 	"github.com/0xdefence/codexssd/internal/tui"
 )
 
@@ -66,7 +68,7 @@ func run(args []string) int {
 	case "install-agent":
 		return cmdInstallAgent(rest)
 	case "self":
-		return cmdNotImplemented("self")
+		return cmdSelf(rest)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return 0
@@ -365,6 +367,39 @@ func printStatus(r codex.LogReport) {
 	if !anyPresent {
 		fmt.Println("\nNo Codex log files are present right now — nothing is using disk here.")
 	}
+}
+
+// cmdSelf implements `codexssd self`: report CodexSSD's own footprint.
+func cmdSelf(args []string) int {
+	fs := flag.NewFlagSet("self", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "output the report as JSON")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: codexssd self [--json]\n\n")
+		fmt.Fprintf(os.Stderr, "Report CodexSSD's own footprint (read-only).\n\n")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	dir, err := recorder.Dir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codexssd: could not determine your home directory: %v\n", err)
+		return 1
+	}
+	rep, err := self.Measure(dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codexssd: could not measure footprint: %v\n", err)
+		return 1
+	}
+
+	if *jsonOut {
+		return emitJSON(rep)
+	}
+	fmt.Println("CodexSSD's own footprint:")
+	fmt.Printf("  mode:     %s\n", rep.Mode)
+	fmt.Printf("  storage:  %s  (%s)\n", codex.HumanBytes(rep.HistoryBytes), rep.StateDir)
+	return 0
 }
 
 // cmdInstallAgent implements `codexssd install-agent`.
