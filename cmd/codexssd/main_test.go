@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -73,5 +75,57 @@ func TestRenderBackupsLists(t *testing.T) {
 	}
 	if !strings.Contains(out, "2.0 KiB") {
 		t.Errorf("backups output missing total size:\n%s", out)
+	}
+}
+
+// withSilencedStdout sends stdout/stderr to /dev/null for the test.
+func withSilencedStdout(t *testing.T) {
+	t.Helper()
+	devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("devnull: %v", err)
+	}
+	o, e := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = devnull, devnull
+	t.Cleanup(func() { os.Stdout, os.Stderr = o, e; devnull.Close() })
+}
+
+func TestInstallAgentWritesToDir(t *testing.T) {
+	withSilencedStdout(t)
+	dir := t.TempDir()
+	if code := cmdInstallAgent([]string{dir}); code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "AGENTS.md")); err != nil {
+		t.Errorf("AGENTS.md not written: %v", err)
+	}
+}
+
+func TestInstallAgentPrintWritesNothing(t *testing.T) {
+	withSilencedStdout(t)
+	dir := t.TempDir()
+	if code := cmdInstallAgent([]string{"--print", dir}); code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Errorf("--print should not write a file")
+	}
+}
+
+func TestInstallAgentUnknownProfile(t *testing.T) {
+	withSilencedStdout(t)
+	if code := cmdInstallAgent([]string{"--profile", "bogus", t.TempDir()}); code != 2 {
+		t.Errorf("exit = %d, want 2 for unknown profile", code)
+	}
+}
+
+func TestInstallAgentRefusesExisting(t *testing.T) {
+	withSilencedStdout(t)
+	dir := t.TempDir()
+	if code := cmdInstallAgent([]string{dir}); code != 0 {
+		t.Fatalf("first exit = %d, want 0", code)
+	}
+	if code := cmdInstallAgent([]string{dir}); code != 1 {
+		t.Errorf("second exit = %d, want 1 (refuse existing)", code)
 	}
 }

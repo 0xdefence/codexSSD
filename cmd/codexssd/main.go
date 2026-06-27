@@ -9,6 +9,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/0xdefence/codexssd/internal/agent"
 	"github.com/0xdefence/codexssd/internal/cleaner"
 	"github.com/0xdefence/codexssd/internal/codex"
 	"github.com/0xdefence/codexssd/internal/tui"
@@ -31,7 +33,7 @@ Commands:
   watch          Watch a running Codex agent and warn on risky activity
   clean          Move Codex's own logs aside into a recoverable recycling bin
   restore        Move previously cleaned logs back from the recycling bin
-  install-agent  Write a "please behave" AGENTS.md into the current repo
+  install-agent  Write a disk/token-safe AGENTS.md into a repo (--profile, --force, --print)
   self           Report CodexSSD's own footprint
   help           Show this help
 
@@ -62,7 +64,7 @@ func run(args []string) int {
 	case "restore":
 		return cmdRestore(rest)
 	case "install-agent":
-		return cmdNotImplemented("install-agent")
+		return cmdInstallAgent(rest)
 	case "self":
 		return cmdNotImplemented("self")
 	case "help", "-h", "--help":
@@ -363,4 +365,55 @@ func printStatus(r codex.LogReport) {
 	if !anyPresent {
 		fmt.Println("\nNo Codex log files are present right now — nothing is using disk here.")
 	}
+}
+
+// cmdInstallAgent implements `codexssd install-agent`.
+//
+// It writes a disk/token-safe AGENTS.md into a repo. It refuses to overwrite an
+// existing AGENTS.md unless --force; --print previews the rules without writing.
+func cmdInstallAgent(args []string) int {
+	fs := flag.NewFlagSet("install-agent", flag.ContinueOnError)
+	profileName := fs.String("profile", string(agent.ProfileBalanced), "rule profile: balanced, strict, repo-only, disk-token-safe")
+	force := fs.Bool("force", false, "overwrite an existing AGENTS.md")
+	printOnly := fs.Bool("print", false, "print the rules to stdout instead of writing a file")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: codexssd install-agent [--profile <name>] [--force] [--print] [dir]\n\n")
+		fmt.Fprintf(os.Stderr, "Write a disk/token-safe AGENTS.md into dir (default \".\").\n\n")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	p, err := agent.Parse(*profileName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codexssd: %v\n", err)
+		return 2
+	}
+
+	if *printOnly {
+		fmt.Print(agent.Content(p))
+		return 0
+	}
+
+	dir := "."
+	if fs.NArg() > 0 {
+		dir = fs.Arg(0)
+	}
+
+	path, replacedForeign, err := agent.Install(dir, p, *force)
+	if err != nil {
+		if errors.Is(err, agent.ErrExists) {
+			fmt.Fprintf(os.Stderr, "codexssd: %s already exists — leaving it untouched.\n", filepath.Join(dir, agent.FileName))
+			fmt.Fprintln(os.Stderr, "Re-run with --force to overwrite, or --print to preview.")
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "codexssd: could not write AGENTS.md: %v\n", err)
+		return 1
+	}
+	if replacedForeign {
+		fmt.Printf("Note: replaced an existing AGENTS.md that CodexSSD didn't create.\n")
+	}
+	fmt.Printf("Wrote %s (%s profile).\n", path, p)
+	return 0
 }
