@@ -169,14 +169,13 @@ Homebrew tap is a later nicety. README already has build-from-source instruction
 
 ---
 
-## Decisions needed from the human
+## Decisions (settled 2026-06-26)
 
-1. **Monitor measurement method** — proposed: WAL-growth-rate proxy for v1 (above).
-   Confirm, or choose process counters now.
-2. **First part to drill into a full TDD plan + execute** — recommended order is the
-   sequence above (watch loop → monitor → install-agent → self → recorder → release),
-   but `install-agent`/`self` are quick wins if you want momentum before the larger
-   monitor.
+1. **Monitor measurement method = WAL-growth-rate proxy (Option A).** Stdlib-only,
+   cross-platform, lightweight; catches the original Codex log-ballooning case. Real
+   per-process write counters (cgo/`/proc`) are deferred to Phase 4.
+2. **Build order = follow the sequence:** watch loop → monitor → install-agent →
+   self → recorder → release. (Make it live first, then build the warn "brain.")
 
 ## Out of scope for Phase 1 (later phases, unchanged)
 
