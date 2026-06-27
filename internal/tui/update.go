@@ -6,6 +6,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/0xdefence/codexssd/internal/codex"
+	"github.com/0xdefence/codexssd/internal/monitor"
 )
 
 // Update implements tea.Model. It is a pure function over (Model, Msg) and is
@@ -23,6 +24,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loadErr = msg.loadErr
 		m.plan = msg.plan
 		m.backups = msg.backups
+		s := monitor.Sample{At: msg.at, TotalBytes: msg.report.TotalBytes, WALBytes: walBytes(msg.report)}
+		m.samples = monitor.AppendSample(m.samples, s, maxSamples)
+		m.assessment = monitor.Evaluate(m.samples, m.running, monitor.DefaultThresholds())
 		return m, nil
 	case tickMsg:
 		// Re-check ~/.codex and schedule the next tick. Does not touch m.state.

@@ -14,11 +14,15 @@ import (
 
 	"github.com/0xdefence/codexssd/internal/cleaner"
 	"github.com/0xdefence/codexssd/internal/codex"
+	"github.com/0xdefence/codexssd/internal/monitor"
 )
 
 // deadweightThreshold is the total Codex-log size at or above which the
 // dashboard emphasizes that tidying is worthwhile.
 const deadweightThreshold int64 = 100 * 1024 * 1024 // 100 MiB
+
+// maxSamples bounds the in-memory sample window the monitor evaluates.
+const maxSamples = 20
 
 // pollInterval is how often the open dashboard re-checks ~/.codex (read-only).
 const pollInterval = 30 * time.Second
@@ -53,6 +57,10 @@ type Model struct {
 	loadErr   error
 	plan      cleaner.Plan
 	backups   []cleaner.Backup
+
+	// monitor (write-activity risk)
+	samples    []monitor.Sample
+	assessment monitor.Assessment
 
 	// interaction state
 	selected      int    // restore list cursor
