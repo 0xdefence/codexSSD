@@ -122,3 +122,11 @@ func loadCmd() tea.Msg {
 		runErr: runErr, plan: plan, backups: backups,
 	}
 }
+
+// tickMsg fires on the poll interval to keep the dashboard live.
+type tickMsg struct{}
+
+// tickCmd schedules the next poll tick.
+func tickCmd() tea.Cmd {
+	return tea.Tick(pollInterval, func(time.Time) tea.Msg { return tickMsg{} })
+}

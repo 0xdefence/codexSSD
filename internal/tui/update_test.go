@@ -289,3 +289,54 @@ func TestCleanCmdMovesWhenNotRunning(t *testing.T) {
 		t.Error("log was not moved aside")
 	}
 }
+
+func TestTickKeepsWatchingWithoutChangingState(t *testing.T) {
+	m, _ := step(New(), sampleLoaded()) // on dashboard
+	next, cmd := step(m, tickMsg{})
+	if next.state != stateDashboard {
+		t.Errorf("tick changed state to %v, want stateDashboard", next.state)
+	}
+	if cmd == nil {
+		t.Error("tick should re-dispatch a command (reload + reschedule)")
+	}
+}
+
+func TestLoadedMsgDoesNotChangeState(t *testing.T) {
+	m, _ := step(New(), sampleLoaded())
+	m.state = stateConfirmClean // user is mid-confirm
+	next, _ := step(m, sampleLoaded())
+	if next.state != stateConfirmClean {
+		t.Errorf("a refresh changed state to %v, want stateConfirmClean", next.state)
+	}
+}
+
+func TestBannerActionableWhenIdleDeadweight(t *testing.T) {
+	m, _ := step(New(), sampleLoaded()) // 200 MiB, not running
+	if got := m.bannerState(); got != bannerActionable {
+		t.Errorf("bannerState = %v, want bannerActionable", got)
+	}
+	if !strings.Contains(m.View(), "press c to tidy") {
+		t.Errorf("actionable banner missing 'press c to tidy':\n%s", m.View())
+	}
+}
+
+func TestBannerInformationalWhenCodexActive(t *testing.T) {
+	m, _ := step(New(), sampleLoaded())
+	m.running = true
+	if got := m.bannerState(); got != bannerInformational {
+		t.Errorf("bannerState = %v, want bannerInformational", got)
+	}
+	view := m.View()
+	if strings.Contains(view, "press c to tidy") {
+		t.Errorf("informational banner should not prompt 'press c' while Codex active:\n%s", view)
+	}
+}
+
+func TestBannerCalmBelowThreshold(t *testing.T) {
+	msg := sampleLoaded()
+	msg.report.TotalBytes = 1 * 1024 * 1024
+	m, _ := step(New(), msg)
+	if got := m.bannerState(); got != bannerCalm {
+		t.Errorf("bannerState = %v, want bannerCalm", got)
+	}
+}

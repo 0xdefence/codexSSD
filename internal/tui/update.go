@@ -24,6 +24,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.plan = msg.plan
 		m.backups = msg.backups
 		return m, nil
+	case tickMsg:
+		// Re-check ~/.codex and schedule the next tick. Does not touch m.state.
+		return m, tea.Batch(loadCmd, tickCmd())
 	case cleanResultMsg:
 		m.state = stateResult
 		if msg.err != nil {

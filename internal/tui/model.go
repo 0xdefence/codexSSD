@@ -20,6 +20,9 @@ import (
 // dashboard emphasizes that tidying is worthwhile.
 const deadweightThreshold int64 = 100 * 1024 * 1024 // 100 MiB
 
+// pollInterval is how often the open dashboard re-checks ~/.codex (read-only).
+const pollInterval = 30 * time.Second
+
 // state is the current screen.
 type state int
 
@@ -65,7 +68,7 @@ func New() Model {
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	return loadCmd
+	return tea.Batch(loadCmd, tickCmd())
 }
 
 // deadweight reports whether the Codex logs are large enough to emphasize.

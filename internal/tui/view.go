@@ -11,6 +11,26 @@ import (
 
 var titleStyle = lipgloss.NewStyle().Bold(true)
 
+// banner classifies what the dashboard's deadweight line should say.
+type banner int
+
+const (
+	bannerCalm          banner = iota // nothing worth tidying
+	bannerActionable                  // deadweight + Codex idle → offer to tidy now
+	bannerInformational               // deadweight + Codex active → can't act yet
+)
+
+// bannerState is a pure function of the current load: it never tracks history.
+func (m Model) bannerState() banner {
+	if !m.deadweight() {
+		return bannerCalm
+	}
+	if m.supported && !m.running {
+		return bannerActionable
+	}
+	return bannerInformational
+}
+
 // View implements tea.Model.
 func (m Model) View() string {
 	if m.showHelp {
@@ -63,9 +83,12 @@ func (m Model) renderDashboard() string {
 	}
 	fmt.Fprintf(&b, "  %-20s %10s\n\n", "Total", codex.HumanBytes(m.report.TotalBytes))
 
-	if m.deadweight() {
-		fmt.Fprintf(&b, "⚠  %s of Codex logs are sitting here — worth tidying.\n", codex.HumanBytes(m.report.TotalBytes))
-	} else {
+	switch m.bannerState() {
+	case bannerActionable:
+		fmt.Fprintf(&b, "⚠  %s of Codex logs piled up — press c to tidy.\n", codex.HumanBytes(m.report.TotalBytes))
+	case bannerInformational:
+		fmt.Fprintf(&b, "⚠  %s piling up — I'll offer to tidy when Codex is closed.\n", codex.HumanBytes(m.report.TotalBytes))
+	default:
 		fmt.Fprintln(&b, "Nothing alarming right now.")
 	}
 
@@ -85,6 +108,7 @@ func (m Model) renderDashboard() string {
 	}
 
 	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "watching ~/.codex · updates every 30s")
 	fmt.Fprintln(&b, m.footer())
 	return b.String()
 }
