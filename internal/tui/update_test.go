@@ -289,3 +289,23 @@ func TestCleanCmdMovesWhenNotRunning(t *testing.T) {
 		t.Error("log was not moved aside")
 	}
 }
+
+func TestTickKeepsWatchingWithoutChangingState(t *testing.T) {
+	m, _ := step(New(), sampleLoaded()) // on dashboard
+	next, cmd := step(m, tickMsg{})
+	if next.state != stateDashboard {
+		t.Errorf("tick changed state to %v, want stateDashboard", next.state)
+	}
+	if cmd == nil {
+		t.Error("tick should re-dispatch a command (reload + reschedule)")
+	}
+}
+
+func TestLoadedMsgDoesNotChangeState(t *testing.T) {
+	m, _ := step(New(), sampleLoaded())
+	m.state = stateConfirmClean // user is mid-confirm
+	next, _ := step(m, sampleLoaded())
+	if next.state != stateConfirmClean {
+		t.Errorf("a refresh changed state to %v, want stateConfirmClean", next.state)
+	}
+}
