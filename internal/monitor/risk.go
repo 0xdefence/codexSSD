@@ -1,5 +1,7 @@
 package monitor
 
+import "fmt"
+
 // Risk is the simple, plain-language risk level surfaced to the user.
 type Risk int
 
@@ -47,10 +49,73 @@ func DefaultThresholds() Thresholds {
 	}
 }
 
-// Evaluate computes a Risk from a window of samples against thresholds.
-//
-// STUB: not implemented yet — always returns RiskLow until the risk engine
-// lands.
-func Evaluate(samples []Sample, t Thresholds) Risk {
-	return RiskLow
+// Assessment is the monitor's read on current Codex log activity.
+type Assessment struct {
+	Level        Risk
+	RateMBPerMin float64
+	WALBytes     int64
+	Reasons      []string
+}
+
+// Evaluate computes a risk Assessment from a window of samples. Rate is the
+// total-log growth between the oldest and newest sample, in MB/min. WAL size and
+// an idle-writer rule (growth while Codex is not running) can escalate the level.
+// Pure: no I/O, no clock — everything comes from the samples.
+func Evaluate(samples []Sample, codexRunning bool, t Thresholds) Assessment {
+	a := Assessment{Level: RiskLow}
+	if len(samples) == 0 {
+		return a
+	}
+	newest := samples[len(samples)-1]
+	a.WALBytes = newest.WALBytes
+
+	if len(samples) >= 2 {
+		oldest := samples[0]
+		mins := newest.At.Sub(oldest.At).Minutes()
+		if mins > 0 {
+			delta := newest.TotalBytes - oldest.TotalBytes
+			if delta < 0 {
+				delta = 0
+			}
+			a.RateMBPerMin = float64(delta) / (1024 * 1024) / mins
+		}
+	}
+
+	// Write-rate thresholds.
+	switch {
+	case a.RateMBPerMin >= t.CriticalMBPerMin:
+		a.Level = RiskCritical
+		a.Reasons = append(a.Reasons, fmt.Sprintf("writing %.0f MB/min", a.RateMBPerMin))
+	case a.RateMBPerMin >= t.HighMBPerMin:
+		a.Level = RiskHigh
+		a.Reasons = append(a.Reasons, fmt.Sprintf("writing %.0f MB/min", a.RateMBPerMin))
+	case a.RateMBPerMin >= t.MediumMBPerMin:
+		a.Level = RiskMedium
+		a.Reasons = append(a.Reasons, fmt.Sprintf("writing %.0f MB/min", a.RateMBPerMin))
+	}
+
+	// WAL size can escalate.
+	walMB := newest.WALBytes / (1024 * 1024)
+	if walMB >= t.CriticalWALSizeMB {
+		a.Level = maxRisk(a.Level, RiskCritical)
+		a.Reasons = append(a.Reasons, fmt.Sprintf("WAL file is %d MiB", walMB))
+	} else if walMB >= t.HighWALSizeMB {
+		a.Level = maxRisk(a.Level, RiskHigh)
+		a.Reasons = append(a.Reasons, fmt.Sprintf("WAL file is %d MiB", walMB))
+	}
+
+	// An idle writer (logs growing while Codex isn't running) is extra alarming.
+	if !codexRunning && a.RateMBPerMin >= t.MediumMBPerMin {
+		a.Level = maxRisk(a.Level, RiskHigh)
+		a.Reasons = append(a.Reasons, "growing while Codex is idle")
+	}
+
+	return a
+}
+
+func maxRisk(a, b Risk) Risk {
+	if a > b {
+		return a
+	}
+	return b
 }
