@@ -391,14 +391,14 @@ func cmdInstallAgent(args []string) int {
 		return 2
 	}
 
-	if *printOnly {
-		fmt.Print(agent.Content(p))
-		return 0
-	}
-
 	dir := "."
 	if fs.NArg() > 0 {
 		dir = fs.Arg(0)
+	}
+
+	if *printOnly {
+		fmt.Print(agent.Content(p))
+		return 0
 	}
 
 	path, replacedForeign, err := agent.Install(dir, p, *force)

@@ -39,3 +39,15 @@ func TestContentHasMarkerAndRules(t *testing.T) {
 		}
 	}
 }
+
+func TestEveryProfileRenders(t *testing.T) {
+	for _, p := range Profiles {
+		c := Content(p)
+		if !strings.Contains(c, "profile="+string(p)) {
+			t.Errorf("Content(%s) missing its profile marker", p)
+		}
+		if !strings.Contains(c, "minimal") { // core rule present for every profile
+			t.Errorf("Content(%s) missing core rules", p)
+		}
+	}
+}

@@ -20,7 +20,7 @@ const (
 )
 
 // Profiles is the set of valid profiles (for help text and validation).
-var Profiles = []Profile{ProfileBalanced, ProfileStrict, ProfileRepoOnly, ProfileDiskTokenSafe}
+var Profiles = [...]Profile{ProfileBalanced, ProfileStrict, ProfileRepoOnly, ProfileDiskTokenSafe}
 
 // marker is the hidden first-line tag CodexSSD writes into every generated
 // AGENTS.md, so it can tell its own file from a hand-written one.
