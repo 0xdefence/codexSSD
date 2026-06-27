@@ -97,6 +97,7 @@ func filepathBase(p string) string { return filepath.Base(p) }
 
 // loadedMsg carries a full status snapshot for the dashboard.
 type loadedMsg struct {
+	at        time.Time
 	report    codex.LogReport
 	running   bool
 	supported bool
@@ -104,6 +105,16 @@ type loadedMsg struct {
 	loadErr   error
 	plan      cleaner.Plan
 	backups   []cleaner.Backup
+}
+
+// walBytes returns the size of the -wal file from a scan report (0 if absent).
+func walBytes(r codex.LogReport) int64 {
+	for _, f := range r.Files {
+		if f.Name == "logs_2.sqlite-wal" && f.Exists {
+			return f.Size
+		}
+	}
+	return 0
 }
 
 // loadCmd gathers the dashboard snapshot (read-only).
@@ -118,7 +129,7 @@ func loadCmd() tea.Msg {
 	plan, _ := planLogs(dir)
 	backups, _ := listBackups(dir)
 	return loadedMsg{
-		report: report, running: running, supported: supported,
+		at: time.Now(), report: report, running: running, supported: supported,
 		runErr: runErr, plan: plan, backups: backups,
 	}
 }

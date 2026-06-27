@@ -11,6 +11,7 @@ import (
 
 	"github.com/0xdefence/codexssd/internal/cleaner"
 	"github.com/0xdefence/codexssd/internal/codex"
+	"github.com/0xdefence/codexssd/internal/monitor"
 )
 
 // key builds a KeyMsg for a single key like "q", "?", "enter", "esc", "up".
@@ -338,5 +339,33 @@ func TestBannerCalmBelowThreshold(t *testing.T) {
 	m, _ := step(New(), msg)
 	if got := m.bannerState(); got != bannerCalm {
 		t.Errorf("bannerState = %v, want bannerCalm", got)
+	}
+}
+
+func TestHighRiskDrivesActionableBanner(t *testing.T) {
+	base := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+	m := New()
+	// First sample: small, idle.
+	first := sampleLoaded()
+	first.report.TotalBytes = 10 * 1024 * 1024
+	first.plan.TotalBytes = 10 * 1024 * 1024
+	first.at = base
+	m, _ = step(m, first)
+	// Second sample one minute later: +600 MiB → CRITICAL rate, even though size < deadweight.
+	second := sampleLoaded()
+	second.report.TotalBytes = 610 * 1024 * 1024
+	second.plan.TotalBytes = 610 * 1024 * 1024
+	second.at = base.Add(time.Minute)
+	m, _ = step(m, second)
+
+	if m.assessment.Level != monitor.RiskCritical {
+		t.Fatalf("assessment level = %v, want RiskCritical", m.assessment.Level)
+	}
+	view := m.View()
+	if !strings.Contains(view, "Risk:") {
+		t.Errorf("dashboard should show a Risk line:\n%s", view)
+	}
+	if m.bannerState() != bannerActionable {
+		t.Errorf("high risk + idle should be actionable, got %v", m.bannerState())
 	}
 }

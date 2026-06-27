@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/0xdefence/codexssd/internal/codex"
+	"github.com/0xdefence/codexssd/internal/monitor"
 )
 
 var titleStyle = lipgloss.NewStyle().Bold(true)
@@ -22,7 +23,8 @@ const (
 
 // bannerState is a pure function of the current load: it never tracks history.
 func (m Model) bannerState() banner {
-	if !m.deadweight() {
+	concern := m.deadweight() || m.assessment.Level >= monitor.RiskMedium
+	if !concern {
 		return bannerCalm
 	}
 	if m.supported && !m.running {
@@ -82,6 +84,15 @@ func (m Model) renderDashboard() string {
 		}
 	}
 	fmt.Fprintf(&b, "  %-20s %10s\n\n", "Total", codex.HumanBytes(m.report.TotalBytes))
+
+	if m.assessment.Level >= monitor.RiskMedium {
+		reason := ""
+		if len(m.assessment.Reasons) > 0 {
+			reason = " — " + m.assessment.Reasons[0]
+		}
+		fmt.Fprintf(&b, "Risk: %s · %.0f MB/min · WAL %s%s\n",
+			m.assessment.Level, m.assessment.RateMBPerMin, codex.HumanBytes(m.assessment.WALBytes), reason)
+	}
 
 	switch m.bannerState() {
 	case bannerActionable:
