@@ -4,6 +4,7 @@
 package self
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -30,7 +31,7 @@ func Measure(stateDir string) (Report, error) {
 
 // dirSize sums the sizes of all regular files under dir (0 if dir is absent).
 func dirSize(dir string) (int64, error) {
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
+	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
 		return 0, nil
 	}
 	var total int64

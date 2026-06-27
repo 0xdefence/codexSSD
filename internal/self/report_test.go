@@ -12,7 +12,9 @@ func TestMeasureSumsStateDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	sub := filepath.Join(dir, "sub")
-	os.MkdirAll(sub, 0o700)
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(sub, "x"), make([]byte, 50), 0o600); err != nil {
 		t.Fatal(err)
 	}

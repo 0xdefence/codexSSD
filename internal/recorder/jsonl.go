@@ -9,6 +9,8 @@ package recorder
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,7 +92,7 @@ func appendTo(path string, r Receipt, max int) error {
 func readLines(path string) ([]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
