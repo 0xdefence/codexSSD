@@ -1,0 +1,37 @@
+# GoReleaser config for CodexSSD.
+# Releases are cut by pushing a version tag (e.g. v0.1.0); see
+# .github/workflows/release.yml. This file is validated with `goreleaser check`.
+version: 2
+
+project_name: codexssd
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: ./cmd/codexssd
+    binary: codexssd
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
