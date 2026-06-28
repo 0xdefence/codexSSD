@@ -35,6 +35,7 @@ Commands:
   watch          Watch a running Codex agent and warn on risky activity
   clean          Move Codex's own logs aside into a recoverable recycling bin
   restore        Move previously cleaned logs back from the recycling bin
+  prune          Release recycling-bin backups past their ~2-week hold to the Trash
   install-agent  Write a disk/token-safe AGENTS.md into a repo (--profile, --force, --print)
   self           Report CodexSSD's own footprint
   help           Show this help
@@ -65,6 +66,8 @@ func run(args []string) int {
 		return cmdClean(rest)
 	case "restore":
 		return cmdRestore(rest)
+	case "prune":
+		return cmdPrune(rest)
 	case "install-agent":
 		return cmdInstallAgent(rest)
 	case "self":
@@ -367,6 +370,68 @@ func printStatus(r codex.LogReport) {
 	if !anyPresent {
 		fmt.Println("\nNo Codex log files are present right now — nothing is using disk here.")
 	}
+}
+
+// cmdPrune implements `codexssd prune`: release backups past their hold to the
+// OS Trash. --dry-run lists what would be released (read-only).
+func cmdPrune(args []string) int {
+	fs := flag.NewFlagSet("prune", flag.ContinueOnError)
+	dryRun := fs.Bool("dry-run", false, "list what would be released, without moving anything")
+	jsonOut := fs.Bool("json", false, "output as JSON")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: codexssd prune [--dry-run] [--json]\n\n")
+		fmt.Fprintf(os.Stderr, "Move recycling-bin backups past their ~2-week hold into the OS Trash.\n\n")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	dir, err := codex.Dir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codexssd: could not determine your home directory: %v\n", err)
+		return 1
+	}
+
+	if *dryRun {
+		backups, err := cleaner.ListBackups(dir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "codexssd: could not read backups: %v\n", err)
+			return 1
+		}
+		expired := cleaner.Expired(backups, time.Now())
+		ids := make([]string, 0, len(expired))
+		for _, b := range expired {
+			ids = append(ids, filepath.Base(b.Dir))
+		}
+		if *jsonOut {
+			return emitJSON(map[string]any{"would_release": ids})
+		}
+		if len(ids) == 0 {
+			fmt.Println("Nothing past its hold — nothing to release.")
+			return 0
+		}
+		fmt.Printf("%d backup(s) past their hold would be released to the Trash:\n", len(ids))
+		for _, id := range ids {
+			fmt.Printf("  %s\n", id)
+		}
+		return 0
+	}
+
+	released, err := cleaner.ReleaseExpired(dir, time.Now())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codexssd: prune failed: %v\n", err)
+		return 1
+	}
+	if *jsonOut {
+		return emitJSON(map[string]any{"released": released})
+	}
+	if len(released) == 0 {
+		fmt.Println("Nothing past its hold — nothing to release.")
+		return 0
+	}
+	fmt.Printf("Released %d backup(s) to the Trash (recoverable until you empty it).\n", len(released))
+	return 0
 }
 
 // cmdSelf implements `codexssd self`: report CodexSSD's own footprint.
