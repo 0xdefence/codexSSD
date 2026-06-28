@@ -46,6 +46,13 @@ about another tool near your machine. So trust is everything:
 
 ## Install / build
 
+**Prebuilt binaries:** download the archive for your OS/arch from the
+[GitHub Releases](https://github.com/0xdefence/codexSSD/releases) page, unpack it,
+and run `./codexssd`. Releases are cut from version tags via GoReleaser
+(macOS and Linux, amd64 + arm64); each release includes `checksums.txt`.
+
+### Build from source
+
 Requires Go (the repo is developed against the current Go toolchain; Go 1.22+).
 
 Build a local binary:
