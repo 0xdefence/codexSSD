@@ -424,6 +424,9 @@ func cmdPrune(args []string) int {
 		return 1
 	}
 	if *jsonOut {
+		if released == nil {
+			released = []string{} // emit [] not null for empty
+		}
 		return emitJSON(map[string]any{"released": released})
 	}
 	if len(released) == 0 {
