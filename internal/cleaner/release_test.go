@@ -1,6 +1,7 @@
 package cleaner
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -71,5 +72,26 @@ func TestReleaseRefusesNonBackupPath(t *testing.T) {
 	}
 	if called {
 		t.Error("moveToTrash must not be called for a refused path")
+	}
+}
+
+func TestReleaseExpiredKeepsHeldOnTrashFailure(t *testing.T) {
+	prev := moveToTrash
+	t.Cleanup(func() { moveToTrash = prev })
+	moveToTrash = func(string) error { return errors.New("trash unavailable") }
+
+	codexDir := t.TempDir()
+	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	bd := mkBackup(t, codexDir, "20260601-000000", now.Add(-time.Hour)) // expired
+
+	released, err := ReleaseExpired(codexDir, now)
+	if err == nil {
+		t.Fatal("ReleaseExpired should surface the trash error")
+	}
+	if len(released) != 0 {
+		t.Errorf("released = %v, want none on trash failure", released)
+	}
+	if _, statErr := os.Stat(bd); statErr != nil {
+		t.Errorf("backup must remain on disk (held) when trashing fails: %v", statErr)
 	}
 }
