@@ -27,6 +27,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		s := monitor.Sample{At: msg.at, TotalBytes: msg.report.TotalBytes, WALBytes: walBytes(msg.report)}
 		m.samples = monitor.AppendSample(m.samples, s, maxSamples)
 		m.assessment = monitor.Evaluate(m.samples, m.running, monitor.DefaultThresholds())
+		if m.startedAt.IsZero() && !msg.at.IsZero() {
+			m.startedAt = msg.at
+		}
+		if m.assessment.RateMBPerMin > m.peakRate {
+			m.peakRate = m.assessment.RateMBPerMin
+		}
+		if m.assessment.Level > m.peakRisk {
+			m.peakRisk = m.assessment.Level
+		}
 		return m, nil
 	case tickMsg:
 		// Re-check ~/.codex and schedule the next tick. Does not touch m.state.

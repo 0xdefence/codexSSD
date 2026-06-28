@@ -369,3 +369,51 @@ func TestHighRiskDrivesActionableBanner(t *testing.T) {
 		t.Errorf("high risk + idle should be actionable, got %v", m.bannerState())
 	}
 }
+
+func TestSessionReceiptSummarizes(t *testing.T) {
+	base := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	m := New()
+	first := sampleLoaded()
+	first.report.TotalBytes = 10 * 1024 * 1024
+	first.at = base
+	m, _ = step(m, first)
+	second := sampleLoaded()
+	second.report.TotalBytes = 610 * 1024 * 1024 // +600 MiB in 1 min → high rate
+	second.at = base.Add(time.Minute)
+	m, _ = step(m, second)
+
+	r := m.sessionReceipt(base.Add(2 * time.Minute))
+	if r.DurationSec != 120 {
+		t.Errorf("DurationSec = %v, want 120", r.DurationSec)
+	}
+	if r.DiskWritten != 600*1024*1024 {
+		t.Errorf("DiskWritten = %d, want 600 MiB of growth", r.DiskWritten)
+	}
+	if r.PeakMBPerMin <= 0 {
+		t.Errorf("PeakMBPerMin = %v, want > 0", r.PeakMBPerMin)
+	}
+	if r.Risk == "" || r.Risk == "LOW" {
+		t.Errorf("Risk = %q, want an elevated level", r.Risk)
+	}
+}
+
+func TestPeakRiskIsMaxNotLast(t *testing.T) {
+	base := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	m := New()
+	hi := sampleLoaded()
+	hi.report.TotalBytes = 10 * 1024 * 1024
+	hi.at = base
+	m, _ = step(m, hi)
+	hi2 := sampleLoaded()
+	hi2.report.TotalBytes = 610 * 1024 * 1024
+	hi2.at = base.Add(time.Minute)
+	m, _ = step(m, hi2) // big rate → high peak
+	// A later calm reading must NOT lower the recorded peak.
+	calm := sampleLoaded()
+	calm.report.TotalBytes = 611 * 1024 * 1024
+	calm.at = base.Add(10 * time.Minute)
+	m, _ = step(m, calm)
+	if m.peakRate <= 0 {
+		t.Errorf("peakRate dropped to %v; should retain the earlier peak", m.peakRate)
+	}
+}
