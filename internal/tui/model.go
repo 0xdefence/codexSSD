@@ -67,6 +67,7 @@ type Model struct {
 	resultMsg     string // success text on the result screen
 	resultErr     error  // error on the result screen
 	blockedReason string // why an action was refused
+	releaseNote   string // note shown after an auto-release on start
 }
 
 // New returns the initial model.
@@ -76,7 +77,7 @@ func New() Model {
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(loadCmd, tickCmd())
+	return tea.Batch(loadCmd, tickCmd(), releaseCmd)
 }
 
 // deadweight reports whether the Codex logs are large enough to emphasize.
@@ -95,6 +96,19 @@ func (m Model) lastTidy() (time.Time, bool) {
 		}
 	}
 	return newest, found
+}
+
+// soonestRelease returns the earliest upcoming backup release time, if any.
+func (m Model) soonestRelease() (time.Time, bool) {
+	var soonest time.Time
+	found := false
+	for _, b := range m.backups {
+		if !found || b.Manifest.HoldUntil.Before(soonest) {
+			soonest = b.Manifest.HoldUntil
+			found = true
+		}
+	}
+	return soonest, found
 }
 
 // Run launches the interactive app. Called by main when no subcommand is given.

@@ -342,6 +342,34 @@ func TestBannerCalmBelowThreshold(t *testing.T) {
 	}
 }
 
+func TestReleasedMsgShowsNoteAndReloads(t *testing.T) {
+	m := New()
+	m, cmd := step(m, releasedMsg{ids: []string{"a", "b"}})
+	if !strings.Contains(m.releaseNote, "2") {
+		t.Errorf("releaseNote = %q, want it to mention 2", m.releaseNote)
+	}
+	if cmd == nil {
+		t.Error("a release should trigger a reload command")
+	}
+}
+
+func TestDashboardShowsRecyclingBin(t *testing.T) {
+	msg := loadedWithBackup() // one backup, HoldUntil 2026-06-26 10:00
+	m, _ := step(New(), msg)
+	view := m.View()
+	if !strings.Contains(view, "Recycling bin") {
+		t.Errorf("dashboard should show a recycling-bin line:\n%s", view)
+	}
+}
+
+func TestRestoreListShowsReleaseDate(t *testing.T) {
+	m, _ := step(New(), loadedWithBackup())
+	m, _ = step(m, key("r"))
+	if !strings.Contains(m.View(), "releases") {
+		t.Errorf("restore list should show each backup's release date:\n%s", m.View())
+	}
+}
+
 func TestHighRiskDrivesActionableBanner(t *testing.T) {
 	base := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
 	m := New()

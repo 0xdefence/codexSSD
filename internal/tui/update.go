@@ -54,6 +54,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.resultMsg = fmt.Sprintf("Restored backup %s to your Codex folder.", msg.id)
 		}
 		return m, nil
+	case releasedMsg:
+		if len(msg.ids) > 0 {
+			m.releaseNote = fmt.Sprintf("Released %d old backup(s) to the Trash.", len(msg.ids))
+		}
+		return m, loadCmd // refresh the backups list after releasing
 	case blockedMsg:
 		m.state = stateBlocked
 		m.blockedReason = msg.reason

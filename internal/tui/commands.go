@@ -92,6 +92,22 @@ func restoreCmd(dir string) tea.Cmd {
 	}
 }
 
+// releasedMsg reports which expired backups were released to the Trash on start.
+type releasedMsg struct {
+	ids []string
+}
+
+// releaseCmd moves any expired recycling-bin backups into the OS Trash. It is
+// best-effort: errors (e.g. unsupported platform) release nothing and are ignored.
+func releaseCmd() tea.Msg {
+	dir, err := codexDir()
+	if err != nil {
+		return releasedMsg{}
+	}
+	released, _ := cleaner.ReleaseExpired(dir, time.Now())
+	return releasedMsg{ids: released}
+}
+
 // filepathBase wraps filepath.Base for use in view rendering.
 func filepathBase(p string) string { return filepath.Base(p) }
 
