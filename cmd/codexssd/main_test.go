@@ -129,3 +129,19 @@ func TestInstallAgentRefusesExisting(t *testing.T) {
 		t.Errorf("second exit = %d, want 1 (refuse existing)", code)
 	}
 }
+
+func TestSelfRuns(t *testing.T) {
+	withSilencedStdout(t)
+	t.Setenv("HOME", t.TempDir())
+	if code := cmdSelf(nil); code != 0 {
+		t.Errorf("self exit = %d, want 0", code)
+	}
+}
+
+func TestSelfJSON(t *testing.T) {
+	withSilencedStdout(t)
+	t.Setenv("HOME", t.TempDir())
+	if code := cmdSelf([]string{"--json"}); code != 0 {
+		t.Errorf("self --json exit = %d, want 0", code)
+	}
+}
