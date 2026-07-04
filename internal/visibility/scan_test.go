@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -67,6 +68,49 @@ func TestScanAggregatesAndFlagsStale(t *testing.T) {
 	}
 	if !byName["codexssd-backups"].IsOurs {
 		t.Error("the recycling bin must be marked IsOurs")
+	}
+}
+
+// TestScanKeepsCountingPastUnreadableSubtree is the reviewer's repro: an
+// unreadable directory in the MIDDLE of a walk must not abort the rest of it.
+// sessions/a (readable, 100 B) sorts before sessions/b (chmod 000) which sorts
+// before sessions/c (readable, 300 B); a correct skip-and-continue walk counts
+// BOTH a's and c's bytes and still records the read error.
+func TestScanKeepsCountingPastUnreadableSubtree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows: unix permission bits not enforced")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permissions not enforced")
+	}
+
+	dir := t.TempDir()
+	mod := now.Add(-time.Hour)
+	write(t, filepath.Join(dir, "sessions", "a", "one.txt"), 100, mod)
+	write(t, filepath.Join(dir, "sessions", "c", "two.txt"), 300, mod)
+	locked := filepath.Join(dir, "sessions", "b")
+	if err := os.MkdirAll(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	// Restore permissions so t.TempDir's cleanup can remove the tree.
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+
+	r := Scan(dir, now, staleAfter)
+	if len(r.Entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(r.Entries))
+	}
+	e := r.Entries[0]
+	if e.TotalBytes != 400 {
+		t.Errorf("TotalBytes = %d, want 400 (both a's 100 and c's 300 bytes)", e.TotalBytes)
+	}
+	if e.FileCount != 2 {
+		t.Errorf("FileCount = %d, want 2", e.FileCount)
+	}
+	if e.ReadError == "" {
+		t.Error("ReadError must record the unreadable subtree")
 	}
 }
 

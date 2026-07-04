@@ -47,16 +47,33 @@ func Scan(dir string, now time.Time, staleAfter time.Duration) Report {
 
 	for _, t := range tops {
 		e := Entry{Name: t.Name(), IsDir: t.IsDir(), IsOurs: t.Name() == cleaner.BackupDirName}
-		walkErr := filepath.WalkDir(filepath.Join(dir, t.Name()), func(_ string, d fs.DirEntry, err error) error {
+		// Skip-and-continue on read errors: returning a non-nil error from a
+		// WalkDir callback aborts the ENTIRE remaining walk for this entry,
+		// silently understating its size (everything listed after the failing
+		// node would be dropped). Instead, record the first error in place and
+		// keep counting, skipping only the unreadable subtree. With that, the
+		// walk itself never returns an error.
+		_ = filepath.WalkDir(filepath.Join(dir, t.Name()), func(_ string, d fs.DirEntry, err error) error {
 			if err != nil {
-				return err
+				if e.ReadError == "" {
+					e.ReadError = err.Error()
+				}
+				if d != nil && d.IsDir() {
+					return fs.SkipDir // skip just this unreadable directory
+				}
+				// d == nil means the walk root itself failed to stat/read;
+				// nothing left to walk, so nil just ends this entry's walk.
+				return nil
 			}
 			if d.IsDir() {
 				return nil
 			}
 			info, err := d.Info()
 			if err != nil {
-				return err
+				if e.ReadError == "" {
+					e.ReadError = err.Error()
+				}
+				return nil // keep counting the remaining files
 			}
 			e.TotalBytes += info.Size()
 			e.FileCount++
@@ -65,10 +82,6 @@ func Scan(dir string, now time.Time, staleAfter time.Duration) Report {
 			}
 			return nil
 		})
-		if walkErr != nil {
-			// Keep whatever we managed to count; report the problem in place.
-			e.ReadError = walkErr.Error()
-		}
 		e.Stale = e.FileCount > 0 && now.Sub(e.NewestMod) >= staleAfter
 		r.TotalBytes += e.TotalBytes
 		r.Entries = append(r.Entries, e)
