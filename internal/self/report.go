@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/0xdefence/codexssd/internal/recorder"
 )
 
 // Report is CodexSSD's own footprint.
@@ -15,6 +17,8 @@ type Report struct {
 	Mode         string `json:"mode"`
 	StateDir     string `json:"state_dir"`
 	HistoryBytes int64  `json:"history_bytes"`
+	Records      int    `json:"records"`
+	LastAction   string `json:"last_action,omitempty"`
 }
 
 // Measure reports CodexSSD's own footprint: the total size of its state
@@ -26,6 +30,13 @@ func Measure(stateDir string) (Report, error) {
 		return r, err
 	}
 	r.HistoryBytes = size
+
+	sum, err := recorder.SummarizeFile(filepath.Join(stateDir, recorder.FileName))
+	if err != nil {
+		return r, err
+	}
+	r.Records = sum.Records
+	r.LastAction = sum.LastAction
 	return r, nil
 }
 

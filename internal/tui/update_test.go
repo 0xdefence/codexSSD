@@ -13,6 +13,7 @@ import (
 	"github.com/0xdefence/codexssd/internal/codex"
 	"github.com/0xdefence/codexssd/internal/config"
 	"github.com/0xdefence/codexssd/internal/monitor"
+	"github.com/0xdefence/codexssd/internal/recorder"
 )
 
 // key builds a KeyMsg for a single key like "q", "?", "enter", "esc", "up".
@@ -266,8 +267,8 @@ func TestRestoreCmdGateRefusesWhileRunning(t *testing.T) {
 
 // cleanCmd moves logs when Codex is not running.
 func TestCleanCmdMovesWhenNotRunning(t *testing.T) {
-	origDir, origRun := codexDir, isCodexRunning
-	t.Cleanup(func() { codexDir, isCodexRunning = origDir, origRun })
+	origDir, origRun, origReceipt := codexDir, isCodexRunning, appendReceipt
+	t.Cleanup(func() { codexDir, isCodexRunning, appendReceipt = origDir, origRun, origReceipt })
 
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "logs_2.sqlite"), make([]byte, 128), 0o600); err != nil {
@@ -275,6 +276,7 @@ func TestCleanCmdMovesWhenNotRunning(t *testing.T) {
 	}
 	codexDir = func() (string, error) { return dir, nil }
 	isCodexRunning = func() (bool, error) { return false, nil }
+	appendReceipt = func(recorder.Receipt) error { return nil } // never touch the real home dir in tests
 
 	msg := cleanCmd(config.Default().BinHold())()
 	res, ok := msg.(cleanResultMsg)
@@ -289,6 +291,39 @@ func TestCleanCmdMovesWhenNotRunning(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "logs_2.sqlite")); !os.IsNotExist(err) {
 		t.Error("log was not moved aside")
+	}
+}
+
+// cleanCmd records a receipt after a successful clean.
+func TestCleanCmdRecordsReceipt(t *testing.T) {
+	origDir, origRun, origReceipt := codexDir, isCodexRunning, appendReceipt
+	t.Cleanup(func() { codexDir, isCodexRunning, appendReceipt = origDir, origRun, origReceipt })
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "logs_2.sqlite"), make([]byte, 128), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	codexDir = func() (string, error) { return dir, nil }
+	isCodexRunning = func() (bool, error) { return false, nil }
+
+	var got recorder.Receipt
+	var calls int
+	appendReceipt = func(r recorder.Receipt) error {
+		calls++
+		got = r
+		return nil
+	}
+
+	msg := cleanCmd(config.Default().BinHold())()
+	res, ok := msg.(cleanResultMsg)
+	if !ok || res.err != nil {
+		t.Fatalf("cleanCmd failed: %+v", msg)
+	}
+	if calls != 1 {
+		t.Fatalf("appendReceipt called %d times, want 1", calls)
+	}
+	if got.Action != "clean" {
+		t.Errorf("Action = %q, want clean", got.Action)
 	}
 }
 

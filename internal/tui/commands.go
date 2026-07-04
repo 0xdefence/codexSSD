@@ -8,6 +8,7 @@ import (
 
 	"github.com/0xdefence/codexssd/internal/cleaner"
 	"github.com/0xdefence/codexssd/internal/codex"
+	"github.com/0xdefence/codexssd/internal/recorder"
 )
 
 // Engine seams. They default to the real engine functions and are overridden in
@@ -26,6 +27,9 @@ var (
 		dest, err := p.ApplyWithHold(time.Now(), hold)
 		return dest, p.TotalBytes, err
 	}
+	// appendReceipt records a session receipt. The TUI has no stderr channel
+	// worth interrupting for, so callers ignore the error entirely.
+	appendReceipt = recorder.Append
 )
 
 // cleanResultMsg reports the outcome of a tidy.
@@ -67,6 +71,11 @@ func cleanCmd(hold time.Duration) tea.Cmd {
 			return cleanResultMsg{dest: "", movedBytes: 0}
 		}
 		dest, moved, err := applyPlan(plan, hold)
+		if err == nil {
+			// Best-effort bookkeeping; the TUI has no stderr channel to warn on, so
+			// the error is ignored entirely rather than surfaced or retried.
+			_ = appendReceipt(recorder.Receipt{At: time.Now(), Action: "clean", BytesMoved: moved, FilesChanged: len(plan.Items), BackupID: filepathBase(dest)})
+		}
 		return cleanResultMsg{dest: dest, movedBytes: moved, err: err}
 	}
 }
@@ -92,6 +101,10 @@ func restoreCmd(dir string) tea.Cmd {
 			return blockedMsg{reason: "Codex appears to be running. Close it first, then try again."}
 		}
 		err := restoreBackup(dir)
+		if err == nil {
+			// Best-effort bookkeeping; ignored entirely — see cleanCmd.
+			_ = appendReceipt(recorder.Receipt{At: time.Now(), Action: "restore", BackupID: filepathBase(dir)})
+		}
 		return restoreResultMsg{id: filepathBase(dir), err: err}
 	}
 }
@@ -109,6 +122,10 @@ func releaseCmd() tea.Msg {
 		return releasedMsg{}
 	}
 	released, _ := cleaner.ReleaseExpired(dir, time.Now())
+	if len(released) > 0 {
+		// Best-effort bookkeeping; ignored entirely — see cleanCmd.
+		_ = appendReceipt(recorder.Receipt{At: time.Now(), Action: "prune", BackupIDs: released})
+	}
 	return releasedMsg{ids: released}
 }
 

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/0xdefence/codexssd/internal/recorder"
 )
 
 // These are hermetic end-to-end tests of the clean -> restore flow. They run on
@@ -76,6 +78,48 @@ func backupDirs(t *testing.T, codexDir string) []string {
 func exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// withCapturedReceipts stubs appendReceipt so tests can inspect what would be
+// recorded without ever writing to the real home directory.
+func withCapturedReceipts(t *testing.T) *[]recorder.Receipt {
+	t.Helper()
+	var got []recorder.Receipt
+	prev := appendReceipt
+	appendReceipt = func(r recorder.Receipt) error {
+		got = append(got, r)
+		return nil
+	}
+	t.Cleanup(func() { appendReceipt = prev })
+	return &got
+}
+
+// clean --yes records exactly one "clean" receipt with the backup's id.
+func TestCleanRecordsReceipt(t *testing.T) {
+	silenceOutput(t)
+	codexDir := setupSandbox(t)
+	withCodexRunning(t, false)
+	receipts := withCapturedReceipts(t)
+
+	if code := cmdClean([]string{"--yes"}); code != 0 {
+		t.Fatalf("clean --yes returned %d; want 0", code)
+	}
+	backups := backupDirs(t, codexDir)
+	if len(backups) != 1 {
+		t.Fatalf("want exactly 1 backup, got %d", len(backups))
+	}
+	wantID := filepath.Base(backups[0])
+
+	if len(*receipts) != 1 {
+		t.Fatalf("got %d receipts, want 1", len(*receipts))
+	}
+	r := (*receipts)[0]
+	if r.Action != "clean" {
+		t.Errorf("Action = %q, want clean", r.Action)
+	}
+	if r.BackupID != wantID {
+		t.Errorf("BackupID = %q, want %q", r.BackupID, wantID)
+	}
 }
 
 // Codex IS running -> clean --yes must refuse and move nothing.

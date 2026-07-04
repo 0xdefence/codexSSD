@@ -149,6 +149,16 @@ func loadConfig() config.Config {
 // a real Codex process or dependence on the host's process table.
 var isCodexRunning = codex.IsCodexRunning
 
+// appendReceipt records a session receipt. A failed receipt is a note, never
+// an error — bookkeeping must not fail the user's action.
+var appendReceipt = recorder.Append
+
+func recordReceipt(r recorder.Receipt) {
+	if err := appendReceipt(r); err != nil {
+		fmt.Fprintf(os.Stderr, "codexssd: note: couldn't record session receipt: %v\n", err)
+	}
+}
+
 // cmdClean implements `codexssd clean`.
 //
 // Default is a read-only dry run. `--yes` moves Codex's own logs aside into the
@@ -226,6 +236,7 @@ func cmdClean(args []string) int {
 	}
 	fmt.Printf("Moved %s of Codex logs aside to:\n  %s\n", codex.HumanBytes(plan.TotalBytes), dest)
 	fmt.Println("Nothing was deleted. Restore them any time with \"codexssd restore\".")
+	recordReceipt(recorder.Receipt{At: time.Now(), Action: "clean", BytesMoved: plan.TotalBytes, FilesChanged: len(plan.Items), BackupID: filepath.Base(dest)})
 	return 0
 }
 
@@ -327,6 +338,7 @@ func cmdRestore(args []string) int {
 				fmt.Fprintf(os.Stderr, "codexssd: restore failed: %v\n", err)
 				return 1
 			}
+			recordReceipt(recorder.Receipt{At: time.Now(), Action: "restore", BackupID: id})
 			if *jsonOut {
 				return emitJSON(map[string]any{
 					"status":    "restored",
@@ -494,6 +506,9 @@ func cmdPrune(args []string) int {
 		fmt.Fprintf(os.Stderr, "codexssd: prune failed: %v\n", err)
 		return 1
 	}
+	if len(released) > 0 {
+		recordReceipt(recorder.Receipt{At: time.Now(), Action: "prune", BackupIDs: released})
+	}
 	if *jsonOut {
 		if released == nil {
 			released = []string{} // emit [] not null for empty
@@ -538,6 +553,11 @@ func cmdSelf(args []string) int {
 	fmt.Println("CodexSSD's own footprint:")
 	fmt.Printf("  mode:     %s\n", rep.Mode)
 	fmt.Printf("  storage:  %s  (%s)\n", codex.HumanBytes(rep.HistoryBytes), rep.StateDir)
+	if rep.Records > 0 {
+		fmt.Printf("  history:  %d recorded action(s), last: %s\n", rep.Records, rep.LastAction)
+	} else {
+		fmt.Println("  history:  no recorded actions yet")
+	}
 	return 0
 }
 
