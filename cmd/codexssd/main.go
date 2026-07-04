@@ -66,7 +66,7 @@ func run(args []string) int {
 	case "report":
 		return cmdReport(rest)
 	case "watch":
-		return cmdNotImplemented("watch")
+		return cmdWatch(rest)
 	case "clean":
 		return cmdClean(rest)
 	case "restore":
@@ -84,14 +84,6 @@ func run(args []string) int {
 		fmt.Fprintf(os.Stderr, "codexssd: unknown command %q\n\n%s", cmd, usage)
 		return 2
 	}
-}
-
-// cmdNotImplemented is a placeholder for Phase 1 commands whose home exists but
-// whose behavior has not landed yet. Keeping them in the dispatch makes the
-// planned CLI surface visible and testable.
-func cmdNotImplemented(name string) int {
-	fmt.Fprintf(os.Stderr, "codexssd: %q is planned for Phase 1 but not implemented yet.\n", name)
-	return 1
 }
 
 // cmdStatus implements `codexssd status`.
