@@ -33,6 +33,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// later de-escalation.
 		if m.startedAt.IsZero() && !msg.at.IsZero() {
 			m.startedAt = msg.at
+			m.startBytes = msg.report.TotalBytes
 		}
 		if m.assessment.RateMBPerMin > m.peakRate {
 			m.peakRate = m.assessment.RateMBPerMin

@@ -54,6 +54,26 @@ func TestSessionReceiptTracksDurationGrowthAndPeaks(t *testing.T) {
 	}
 }
 
+func TestSessionReceiptGrowthSpansWholeSessionPastSampleWindow(t *testing.T) {
+	start := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	m := New(config.Default())
+
+	// Feed far more than maxSamples (20) loads so the ring buffer no longer holds
+	// the session's first sample. Growth must still be measured from the true
+	// start (100 MiB) to the last report, not from the oldest retained sample.
+	const start0 = int64(100 * 1024 * 1024)
+	m, _ = step(m, loadedAt(start, start0))
+	for i := 1; i <= 40; i++ {
+		total := start0 + int64(i)*(1024*1024) // grow 1 MiB per load
+		m, _ = step(m, loadedAt(start.Add(time.Duration(i)*time.Minute), total))
+	}
+
+	rec := m.sessionReceipt(start.Add(41 * time.Minute))
+	if want := int64(40 * 1024 * 1024); rec.DiskWritten != want {
+		t.Errorf("DiskWritten = %d, want %d (full-session growth, not just the retained window)", rec.DiskWritten, want)
+	}
+}
+
 func TestSessionReceiptPeakSurvivesDeEscalation(t *testing.T) {
 	start := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
 	m := New(config.Default())

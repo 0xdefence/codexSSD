@@ -66,10 +66,13 @@ type Model struct {
 	samples    []monitor.Sample
 	assessment monitor.Assessment
 
-	// session tracking (for the receipt written when the dashboard is quit)
-	startedAt time.Time    // first successful load of this session
-	peakRate  float64      // highest MB/min seen this session
-	peakRisk  monitor.Risk // highest risk level seen this session
+	// session tracking (for the receipt written when the dashboard is quit).
+	// These live outside the bounded sample window so they reflect the WHOLE
+	// session, not just the trailing ~10 minutes the ring buffer retains.
+	startedAt  time.Time    // first successful load of this session
+	startBytes int64        // total log size at the first load
+	peakRate   float64      // highest MB/min seen this session
+	peakRisk   monitor.Risk // highest risk level seen this session
 
 	// interaction state
 	selected      int    // restore list cursor
@@ -103,12 +106,13 @@ func (m Model) sessionReceipt(now time.Time) recorder.Receipt {
 	if !m.startedAt.IsZero() {
 		dur = now.Sub(m.startedAt).Seconds()
 	}
-	var grew int64
-	if len(m.samples) >= 2 {
-		grew = m.samples[len(m.samples)-1].TotalBytes - m.samples[0].TotalBytes
-		if grew < 0 {
-			grew = 0
-		}
+	// Growth is measured from the session's first load (startBytes) to the most
+	// recent report — NOT off m.samples, which is a bounded ring buffer whose
+	// oldest entry is not the session start for any session open longer than
+	// the window. Clamped so a mid-session tidy (logs shrink) never goes negative.
+	grew := m.report.TotalBytes - m.startBytes
+	if grew < 0 {
+		grew = 0
 	}
 	return recorder.Receipt{
 		At:           now,
