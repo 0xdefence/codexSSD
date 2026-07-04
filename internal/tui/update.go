@@ -28,6 +28,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		s := monitor.Sample{At: msg.at, TotalBytes: msg.report.TotalBytes, WALBytes: walBytes(msg.report), MemBytes: msg.memBytes}
 		m.samples = monitor.AppendSample(m.samples, s, maxSamples)
 		m.assessment = monitor.Evaluate(m.samples, m.running, m.cfg.MonitorThresholds())
+		// Track session peaks for the receipt written on quit. startedAt is the
+		// first successful load; peaks only ever ratchet up, so they survive a
+		// later de-escalation.
+		if m.startedAt.IsZero() && !msg.at.IsZero() {
+			m.startedAt = msg.at
+		}
+		if m.assessment.RateMBPerMin > m.peakRate {
+			m.peakRate = m.assessment.RateMBPerMin
+		}
+		if m.assessment.Level > m.peakRisk {
+			m.peakRisk = m.assessment.Level
+		}
 		return m, nil
 	case tickMsg:
 		// Re-check ~/.codex and schedule the next tick. Does not touch m.state.

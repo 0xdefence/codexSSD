@@ -16,6 +16,7 @@ import (
 	"github.com/0xdefence/codexssd/internal/codex"
 	"github.com/0xdefence/codexssd/internal/config"
 	"github.com/0xdefence/codexssd/internal/monitor"
+	"github.com/0xdefence/codexssd/internal/recorder"
 )
 
 // deadweightThreshold is the total Codex-log size at or above which the
@@ -65,6 +66,11 @@ type Model struct {
 	samples    []monitor.Sample
 	assessment monitor.Assessment
 
+	// session tracking (for the receipt written when the dashboard is quit)
+	startedAt time.Time    // first successful load of this session
+	peakRate  float64      // highest MB/min seen this session
+	peakRisk  monitor.Risk // highest risk level seen this session
+
 	// interaction state
 	selected      int    // restore list cursor
 	resultMsg     string // success text on the result screen
@@ -86,6 +92,32 @@ func (m Model) Init() tea.Cmd {
 // deadweight reports whether the Codex logs are large enough to emphasize.
 func (m Model) deadweight() bool {
 	return m.report.TotalBytes >= deadweightThreshold
+}
+
+// sessionReceipt summarizes this dashboard session for the JSONL history. It is
+// pure so it can be tested without launching the program. DiskWritten is the log
+// growth observed across the session, clamped so a mid-session tidy (which
+// shrinks the logs) never reports a negative amount.
+func (m Model) sessionReceipt(now time.Time) recorder.Receipt {
+	dur := 0.0
+	if !m.startedAt.IsZero() {
+		dur = now.Sub(m.startedAt).Seconds()
+	}
+	var grew int64
+	if len(m.samples) >= 2 {
+		grew = m.samples[len(m.samples)-1].TotalBytes - m.samples[0].TotalBytes
+		if grew < 0 {
+			grew = 0
+		}
+	}
+	return recorder.Receipt{
+		At:           now,
+		Action:       "session",
+		DurationSec:  dur,
+		DiskWritten:  grew,
+		PeakMBPerMin: m.peakRate,
+		Risk:         m.peakRisk.String(),
+	}
 }
 
 // lastTidy returns the most recent backup time, if any backups exist.
@@ -120,6 +152,11 @@ func Run() error {
 	// A malformed config must never block the dashboard from opening — the
 	// error is ignored because LoadDefault always returns usable defaults.
 	cfg, _ := config.LoadDefault()
-	_, err := tea.NewProgram(New(cfg), tea.WithAltScreen()).Run()
+	final, err := tea.NewProgram(New(cfg), tea.WithAltScreen()).Run()
+	// On quit, record a one-line session receipt (best-effort — a failed write
+	// must never mask the program's own exit status).
+	if m, ok := final.(Model); ok {
+		_ = appendReceipt(m.sessionReceipt(time.Now()))
+	}
 	return err
 }
