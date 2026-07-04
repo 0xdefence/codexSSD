@@ -24,6 +24,7 @@ import (
 	"github.com/0xdefence/codexssd/internal/recorder"
 	"github.com/0xdefence/codexssd/internal/self"
 	"github.com/0xdefence/codexssd/internal/tui"
+	"github.com/0xdefence/codexssd/internal/visibility"
 )
 
 const usage = `codexssd - a low-write local watchdog for AI coding agents
@@ -33,6 +34,7 @@ Usage:
 
 Commands:
   status         Show Codex's log files and their sizes (read-only)
+  report         Show what's using disk inside ~/.codex (read-only)
   watch          Watch a running Codex agent and warn on risky activity
   clean          Move Codex's own logs aside into a recoverable recycling bin
   restore        Move previously cleaned logs back from the recycling bin
@@ -61,6 +63,8 @@ func run(args []string) int {
 	switch cmd {
 	case "status":
 		return cmdStatus(rest)
+	case "report":
+		return cmdReport(rest)
 	case "watch":
 		return cmdNotImplemented("watch")
 	case "clean":
@@ -382,6 +386,61 @@ func printStatus(r codex.LogReport) {
 	if !anyPresent {
 		fmt.Println("\nNo Codex log files are present right now — nothing is using disk here.")
 	}
+}
+
+// cmdReport implements `codexssd report`.
+//
+// SAFETY: 100% read-only, and scoped to ~/.codex ONLY. It reports and points;
+// it never acts and never suggests CodexSSD act on anything beyond its own
+// known log files.
+func cmdReport(args []string) int {
+	fs := flag.NewFlagSet("report", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "output the report as JSON")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: codexssd report [--json]\n\n")
+		fmt.Fprintf(os.Stderr, "Show what's using disk inside ~/.codex (read-only).\n\n")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	dir, err := codex.Dir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codexssd: could not determine your home directory: %v\n", err)
+		return 1
+	}
+	cfg := loadConfig()
+	rep := visibility.Scan(dir, time.Now(), cfg.StaleAfter())
+	if *jsonOut {
+		return emitJSON(rep)
+	}
+	renderVisibility(os.Stdout, rep)
+	return 0
+}
+
+// renderVisibility prints the disk report in plain language.
+func renderVisibility(w io.Writer, r visibility.Report) {
+	if !r.DirExists {
+		fmt.Fprintf(w, "No Codex directory found at %s — nothing is using disk here.\n", r.Dir)
+		return
+	}
+	fmt.Fprintf(w, "Disk use inside %s (%s total):\n\n", r.Dir, codex.HumanBytes(r.TotalBytes))
+	for _, e := range r.Entries {
+		line := fmt.Sprintf("  %-24s %10s  (%d files)", e.Name, codex.HumanBytes(e.TotalBytes), e.FileCount)
+		if e.Stale {
+			line += fmt.Sprintf(" — untouched since %s", e.NewestMod.Format("January 2006"))
+		}
+		if e.IsOurs {
+			line += "  [CodexSSD's own recycling bin]"
+		}
+		if e.ReadError != "" {
+			line += "  (couldn't read everything here)"
+		}
+		fmt.Fprintln(w, line)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "CodexSSD only ever tidies its known Codex log files; the rest is")
+	fmt.Fprintln(w, "yours to decide on. Nothing above has been touched.")
 }
 
 // cmdPrune implements `codexssd prune`: release backups past their hold to the
