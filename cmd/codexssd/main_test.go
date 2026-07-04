@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/0xdefence/codexssd/internal/cleaner"
+	"github.com/0xdefence/codexssd/internal/visibility"
 )
 
 func TestRenderPlanEmpty(t *testing.T) {
@@ -143,5 +146,73 @@ func TestSelfJSON(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if code := cmdSelf([]string{"--json"}); code != 0 {
 		t.Errorf("self --json exit = %d, want 0", code)
+	}
+}
+
+// writeExpiredBackup creates an expired backup under HOME/.codex for prune tests.
+func writeExpiredBackup(t *testing.T, home, id string) string {
+	t.Helper()
+	bd := filepath.Join(home, ".codex", "codexssd-backups", id)
+	if err := os.MkdirAll(bd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bd, "logs_2.sqlite"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+	m := cleaner.Manifest{MovedAt: past, HoldUntil: past, Items: []cleaner.ManifestItem{{Name: "logs_2.sqlite", OriginalPath: filepath.Join(home, ".codex", "logs_2.sqlite"), Size: 1}}}
+	data, _ := json.Marshal(m)
+	if err := os.WriteFile(filepath.Join(bd, "manifest.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return bd
+}
+
+func TestPruneDryRunReleasesNothing(t *testing.T) {
+	withSilencedStdout(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bd := writeExpiredBackup(t, home, "20000101-000000")
+
+	if code := cmdPrune([]string{"--dry-run"}); code != 0 {
+		t.Fatalf("prune --dry-run exit = %d, want 0", code)
+	}
+	if _, err := os.Stat(bd); err != nil {
+		t.Errorf("--dry-run must not move the backup: %v", err)
+	}
+}
+
+func TestPruneNoBackups(t *testing.T) {
+	withSilencedStdout(t)
+	t.Setenv("HOME", t.TempDir())
+	if code := cmdPrune(nil); code != 0 {
+		t.Errorf("prune with no backups exit = %d, want 0", code)
+	}
+}
+
+func TestPruneBadFlag(t *testing.T) {
+	withSilencedStdout(t)
+	t.Setenv("HOME", t.TempDir())
+	if code := cmdPrune([]string{"--nope"}); code != 2 {
+		t.Errorf("prune bad flag exit = %d, want 2", code)
+	}
+}
+
+func TestRenderVisibilityReport(t *testing.T) {
+	r := visibility.Report{
+		Dir: "/home/x/.codex", DirExists: true, TotalBytes: 500,
+		Entries: []visibility.Entry{
+			{Name: "sessions", IsDir: true, TotalBytes: 500, FileCount: 2,
+				NewestMod: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC), Stale: true},
+		},
+	}
+	var buf bytes.Buffer
+	renderVisibility(&buf, r)
+	out := buf.String()
+	if !strings.Contains(out, "sessions") || !strings.Contains(out, "March 2026") {
+		t.Errorf("output missing pieces:\n%s", out)
+	}
+	if !strings.Contains(out, "yours to decide") {
+		t.Errorf("report must end with the report-only pointer:\n%s", out)
 	}
 }

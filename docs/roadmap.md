@@ -21,6 +21,8 @@ Think of it as a dial we're turning up slowly — from "smoke detector" to
 
 ## Phase 1 — The Watchdog (the safe core)
 
+> Status (2026-07): shipped
+
 **Goal:** A tool that watches, warns, and safely tidies the AI tool's own logs.
 Nothing it does can hurt you.
 
@@ -40,6 +42,10 @@ recommend it, and it delivers the core promise — noticing what busy people mis
 ---
 
 ## Phase 2 — The Recycling Bin & Visibility (notice it for them)
+
+> Status (2026-07): shipped — with a deliberate narrowing: disk/directory
+> visibility (`report`) covers `~/.codex` only, per the spec. It does not scan
+> the rest of the filesystem for other AI tools' clutter.
 
 **Goal:** Make the invisible visible, and give safe actions a giant undo button.
 

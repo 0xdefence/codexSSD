@@ -1,9 +1,11 @@
 package recorder
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAppendToWritesOneLinePerCall(t *testing.T) {
@@ -49,6 +51,39 @@ func TestReadLinesMissingFile(t *testing.T) {
 	}
 	if len(lines) != 0 {
 		t.Errorf("lines = %d, want 0", len(lines))
+	}
+}
+
+func TestSummarizeFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.jsonl")
+
+	s, err := SummarizeFile(path)
+	if err != nil || s.Records != 0 {
+		t.Fatalf("missing file: got %+v, %v; want zero summary, nil", s, err)
+	}
+
+	at := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	appendTo(path, Receipt{At: at, Action: "clean", BytesMoved: 100, BackupID: "20260704-120000"}, 10)
+	appendTo(path, Receipt{At: at.Add(time.Hour), Action: "restore", BackupID: "20260704-120000"}, 10)
+
+	s, err = SummarizeFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Records != 2 || s.LastAction != "restore" || !s.LastAt.Equal(at.Add(time.Hour)) {
+		t.Errorf("got %+v", s)
+	}
+}
+
+func TestSummarizeFileSkipsCorruptLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.jsonl")
+	os.WriteFile(path, []byte("{not json}\n{\"at\":\"2026-07-04T12:00:00Z\",\"action\":\"clean\"}\n"), 0o600)
+	s, err := SummarizeFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Records != 1 || s.LastAction != "clean" {
+		t.Errorf("got %+v", s)
 	}
 }
 

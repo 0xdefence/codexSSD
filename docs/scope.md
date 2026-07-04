@@ -11,19 +11,23 @@
 These are the things we're committing to build first. All of them are safe —
 nothing here can hurt a user's machine or data.
 
-- **Watching AI coding tools** (starting with Codex) while they run
-- **Plain-language warnings** when disk or memory use gets alarming
+- **Watching AI coding tools** (starting with Codex) while they run — **[shipped]**
+  (`watch`; memory warnings currently cover Codex's own process RSS only)
+- **Plain-language warnings** when disk or memory use gets alarming — **[shipped]**
+  (`watch`, using configurable thresholds)
 - **Safely clearing Codex's own log files** — moved into a recoverable recycling
-  bin, never truly deleted
+  bin, never truly deleted — **[shipped]** (`clean`)
 - **The recycling bin itself** — holds moved-aside items for ~2 weeks, then
-  releases them if not missed; Codex data always clawable back
+  releases them if not missed; Codex data always clawable back — **[shipped]**
+  (`restore`, `prune`)
 - **A clear report** showing what's eating disk and memory, including stale old
-  logs from forgotten projects
+  logs from forgotten projects — **[shipped]** (`report`)
 - **"Please behave" rules** installed for the AI agent, to reduce mess at the
-  source
+  source — **[shipped]** (`install-agent`)
 - **Honest self-reporting** of CodexSSD's own footprint (disk, memory, processor)
+  — **[shipped]** (`self`; covers disk and history, not a live processor metric)
 - **Flagging** other clutter for the user to decide on — report only, never
-  acting
+  acting — **[shipped]** (`report`)
 
 ## Out of scope for this build (deliberately deferred)
 

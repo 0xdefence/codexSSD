@@ -111,11 +111,20 @@ func (m Model) renderDashboard() string {
 	default:
 		fmt.Fprintln(&b, "Codex doesn't appear to be running.")
 	}
+	if m.running && m.memBytes > 0 {
+		fmt.Fprintf(&b, "Codex memory:  %s\n", codex.HumanBytes(m.memBytes))
+	}
 
 	if t, ok := m.lastTidy(); ok {
-		fmt.Fprintf(&b, "Recoverable backups: %d (last tidy %s)\n", len(m.backups), t.Format("2006-01-02 15:04"))
+		fmt.Fprintf(&b, "Recycling bin: %d backup(s) (last tidy %s)\n", len(m.backups), t.Format("2006-01-02 15:04"))
+		if s, ok := m.soonestRelease(); ok {
+			fmt.Fprintf(&b, "  next release: %s\n", s.Format("2006-01-02"))
+		}
 	} else {
-		fmt.Fprintln(&b, "Recoverable backups: none")
+		fmt.Fprintln(&b, "Recycling bin: empty")
+	}
+	if m.releaseNote != "" {
+		fmt.Fprintln(&b, m.releaseNote)
 	}
 
 	fmt.Fprintln(&b)
@@ -183,7 +192,7 @@ func (m Model) renderRestoreList() string {
 		for _, it := range bk.Manifest.Items {
 			total += it.Size
 		}
-		fmt.Fprintf(&b, "%s%-18s %10s\n", cursor, filepathBase(bk.Dir), codex.HumanBytes(total))
+		fmt.Fprintf(&b, "%s%-18s %10s   releases %s\n", cursor, filepathBase(bk.Dir), codex.HumanBytes(total), bk.Manifest.HoldUntil.Format("2006-01-02"))
 	}
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "↑/↓ choose · enter select · esc back")
