@@ -133,3 +133,40 @@ func TestEvaluateNoIdleEscalationWhenRunning(t *testing.T) {
 		}
 	}
 }
+
+func TestEvaluateMemoryEscalation(t *testing.T) {
+	base := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	th := DefaultThresholds()
+
+	t.Run("high memory escalates to HIGH", func(t *testing.T) {
+		s := []Sample{{At: base, TotalBytes: 0, MemBytes: 3 * 1024 * 1024 * 1024}} // 3 GiB
+		a := Evaluate(s, true, th)
+		if a.Level != RiskHigh {
+			t.Errorf("Level = %v, want HIGH", a.Level)
+		}
+	})
+
+	t.Run("critical memory escalates to CRITICAL", func(t *testing.T) {
+		s := []Sample{{At: base, MemBytes: 7 * 1024 * 1024 * 1024}} // 7 GiB
+		a := Evaluate(s, true, th)
+		if a.Level != RiskCritical {
+			t.Errorf("Level = %v, want CRITICAL", a.Level)
+		}
+	})
+
+	t.Run("modest memory stays LOW", func(t *testing.T) {
+		s := []Sample{{At: base, MemBytes: 512 * 1024 * 1024}}
+		if a := Evaluate(s, true, th); a.Level != RiskLow {
+			t.Errorf("Level = %v, want LOW", a.Level)
+		}
+	})
+
+	t.Run("zero mem thresholds disable the check", func(t *testing.T) {
+		off := th
+		off.HighMemMB, off.CriticalMemMB = 0, 0
+		s := []Sample{{At: base, MemBytes: 64 * 1024 * 1024 * 1024}}
+		if a := Evaluate(s, true, off); a.Level != RiskLow {
+			t.Errorf("Level = %v, want LOW when disabled", a.Level)
+		}
+	})
+}

@@ -370,6 +370,15 @@ func TestRestoreListShowsReleaseDate(t *testing.T) {
 	}
 }
 
+func TestLoadedMsgCarriesMemBytesIntoSample(t *testing.T) {
+	msg := sampleLoaded()
+	msg.memBytes = 3 << 30 // 3 GiB
+	m, _ := step(New(), msg)
+	if got := m.samples[len(m.samples)-1].MemBytes; got != 3<<30 {
+		t.Errorf("samples[last].MemBytes = %d, want %d", got, int64(3<<30))
+	}
+}
+
 func TestHighRiskDrivesActionableBanner(t *testing.T) {
 	base := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
 	m := New()

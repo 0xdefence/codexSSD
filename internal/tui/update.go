@@ -24,7 +24,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loadErr = msg.loadErr
 		m.plan = msg.plan
 		m.backups = msg.backups
-		s := monitor.Sample{At: msg.at, TotalBytes: msg.report.TotalBytes, WALBytes: walBytes(msg.report)}
+		m.memBytes = msg.memBytes
+		s := monitor.Sample{At: msg.at, TotalBytes: msg.report.TotalBytes, WALBytes: walBytes(msg.report), MemBytes: msg.memBytes}
 		m.samples = monitor.AppendSample(m.samples, s, maxSamples)
 		m.assessment = monitor.Evaluate(m.samples, m.running, monitor.DefaultThresholds())
 		return m, nil

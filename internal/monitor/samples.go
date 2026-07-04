@@ -6,11 +6,12 @@ package monitor
 
 import "time"
 
-// Sample is a point-in-time reading of Codex's log sizes.
+// Sample is a point-in-time reading of Codex's log sizes and memory use.
 type Sample struct {
 	At         time.Time
 	TotalBytes int64 // total size of Codex's known log files
 	WALBytes   int64 // size of logs_2.sqlite-wal
+	MemBytes   int64 // total RSS of Codex processes (0 when unknown/not running)
 }
 
 // AppendSample adds s to history, keeping at most max most-recent samples.

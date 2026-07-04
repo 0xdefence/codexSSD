@@ -16,6 +16,7 @@ var (
 	codexDir       = codex.Dir
 	scanLogs       = codex.ScanLogs
 	isCodexRunning = codex.IsCodexRunning
+	codexMemory    = codex.ProcessMemory
 	planLogs       = cleaner.PlanCodexLogs
 	listBackups    = cleaner.ListBackups
 	restoreBackup  = cleaner.Restore
@@ -121,6 +122,7 @@ type loadedMsg struct {
 	loadErr   error
 	plan      cleaner.Plan
 	backups   []cleaner.Backup
+	memBytes  int64 // total Codex RSS (0 when unknown)
 }
 
 // walBytes returns the size of the -wal file from a scan report (0 if absent).
@@ -144,9 +146,10 @@ func loadCmd() tea.Msg {
 	supported := runErr != codex.ErrUnsupportedPlatform
 	plan, _ := planLogs(dir)
 	backups, _ := listBackups(dir)
+	mem, _ := codexMemory() // best-effort; 0 on any error — never blocks the dashboard
 	return loadedMsg{
 		at: time.Now(), report: report, running: running, supported: supported,
-		runErr: runErr, plan: plan, backups: backups,
+		runErr: runErr, plan: plan, backups: backups, memBytes: mem,
 	}
 }
 

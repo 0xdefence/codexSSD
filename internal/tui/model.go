@@ -57,6 +57,7 @@ type Model struct {
 	loadErr   error
 	plan      cleaner.Plan
 	backups   []cleaner.Backup
+	memBytes  int64 // total Codex RSS (0 when unknown)
 
 	// monitor (write-activity risk)
 	samples    []monitor.Sample
