@@ -11,10 +11,36 @@ import (
 	"time"
 
 	"github.com/0xdefence/codexssd/internal/codex"
+	"github.com/0xdefence/codexssd/internal/config"
 	"github.com/0xdefence/codexssd/internal/monitor"
 	"github.com/0xdefence/codexssd/internal/notify"
 	"github.com/0xdefence/codexssd/internal/recorder"
 )
+
+// minWatchInterval is the floor below which --interval is clamped, mirroring
+// config.Config.PollInterval's own documented 5s floor.
+const minWatchInterval = 5 * time.Second
+
+// watchInterval resolves the effective poll interval from the --interval flag
+// and config, enforcing a safe floor.
+//
+// WHY: this is a watchdog meant for non-technical users — it must never
+// itself hammer the machine it's supposed to be protecting. A non-positive
+// value would reach time.NewTicker and panic; a tiny positive value (e.g.
+// 1ns) would busy-loop process-table scans instead. So non-positive values
+// fall back to the configured default, and anything below the 5s floor is
+// clamped up to it with one friendly note.
+func watchInterval(flagVal time.Duration, cfg config.Config) time.Duration {
+	if flagVal <= 0 {
+		return cfg.PollInterval()
+	}
+	if flagVal < minWatchInterval {
+		fmt.Fprintf(os.Stderr, "codexssd: note: minimum watch interval is %s — using %s.\n",
+			minWatchInterval, minWatchInterval)
+		return minWatchInterval
+	}
+	return flagVal
+}
 
 // watchDeps injects every effect the watch loop has, so tests can script a
 // whole session deterministically.
@@ -53,9 +79,7 @@ func cmdWatch(args []string) int {
 		return 1
 	}
 	cfg := loadConfig()
-	if *interval == 0 {
-		*interval = cfg.PollInterval()
-	}
+	*interval = watchInterval(*interval, cfg)
 
 	notifier := notify.Notify
 	if *noNotify || !cfg.Notifications {

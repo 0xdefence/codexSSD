@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/0xdefence/codexssd/internal/codex"
+	"github.com/0xdefence/codexssd/internal/config"
 	"github.com/0xdefence/codexssd/internal/monitor"
 )
 
@@ -79,5 +80,83 @@ func TestRunWatchNoNotifyBelowHigh(t *testing.T) {
 	runWatch(&buf, false, monitor.DefaultThresholds(), deps)
 	if len(*notified) != 0 {
 		t.Errorf("MEDIUM must not notify, got %v", *notified)
+	}
+}
+
+// TestWatchInterval pins the --interval safety clamp: non-positive values fall
+// back to the configured default, and anything below the documented 5s floor
+// is raised to 5s — a watchdog must never itself hammer the machine by
+// busy-looping process-table scans, nor panic on a negative ticker duration.
+func TestWatchInterval(t *testing.T) {
+	cfg := config.Default()
+	cases := []struct {
+		name string
+		flag time.Duration
+		want time.Duration
+	}{
+		{"negative falls back to config", -5 * time.Second, cfg.PollInterval()},
+		{"zero falls back to config", 0, cfg.PollInterval()},
+		{"1ns clamps to 5s floor", time.Nanosecond, 5 * time.Second},
+		{"4s clamps to 5s floor", 4 * time.Second, 5 * time.Second},
+		{"5s stays at 5s", 5 * time.Second, 5 * time.Second},
+		{"45s passes through unchanged", 45 * time.Second, 45 * time.Second},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := watchInterval(c.flag, cfg)
+			if got != c.want {
+				t.Errorf("watchInterval(%v) = %v, want %v", c.flag, got, c.want)
+			}
+		})
+	}
+}
+
+// scriptedDepsBaselineWAL sets up a single-observation session (no ticks, stop
+// closed already) whose one scan reports a WAL file at walBytes — used to pin
+// the deliberate behavior that even a baseline (first-ever) sample that is
+// already HIGH/CRITICAL fires exactly one notification, since escalation is
+// judged against the -1 sentinel "no risk observed yet", not a prior tick.
+func scriptedDepsBaselineWAL(t *testing.T, totalBytes, walBytes int64) (watchDeps, *[]string) {
+	t.Helper()
+	stop := make(chan struct{})
+	close(stop) // baseline only: no ticks needed
+	var notified []string
+	base := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	deps := watchDeps{
+		scan: func() codex.LogReport {
+			return codex.LogReport{
+				DirExists:  true,
+				TotalBytes: totalBytes,
+				Files: []codex.LogFile{
+					{Name: "logs_2.sqlite-wal", Exists: true, Size: walBytes},
+				},
+			}
+		},
+		memory:  func() (int64, error) { return 0, nil },
+		running: func() (bool, error) { return true, nil },
+		notify: func(title, body string) error {
+			notified = append(notified, title+": "+body)
+			return nil
+		},
+		now:  func() time.Time { return base },
+		tick: make(chan time.Time), // never fires
+		stop: stop,
+	}
+	return deps, &notified
+}
+
+func TestRunWatchBaselineHighWALNotifiesOnce(t *testing.T) {
+	th := monitor.DefaultThresholds()
+	// WAL at exactly the HIGH threshold on the very first (baseline) sample.
+	deps, notified := scriptedDepsBaselineWAL(t, 0, th.HighWALSizeMB*1024*1024)
+	var buf bytes.Buffer
+	runWatch(&buf, false, th, deps)
+
+	out := buf.String()
+	if strings.Count(out, "risk HIGH") != 1 {
+		t.Errorf("want exactly one 'risk HIGH' line for a baseline-HIGH sample, got:\n%s", out)
+	}
+	if len(*notified) != 1 {
+		t.Errorf("want exactly one notification for a baseline-HIGH sample, got %v", *notified)
 	}
 }
