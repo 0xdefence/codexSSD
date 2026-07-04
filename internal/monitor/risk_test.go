@@ -170,3 +170,35 @@ func TestEvaluateMemoryEscalation(t *testing.T) {
 		}
 	})
 }
+
+// TestEvaluateZeroThresholdsDisableEverything pins that an all-zero config (a
+// natural way to try to disable the monitor entirely) results in RiskLow, not
+// "every check instantly trips because 0 >= 0". Rate and WAL checks need the
+// same >0 guard the memory checks already have.
+func TestEvaluateZeroThresholdsDisableEverything(t *testing.T) {
+	var zero Thresholds // every field zero
+	huge := window(mib(100000), mib(50000))
+	a := Evaluate(huge, true, zero)
+	if a.Level != RiskLow {
+		t.Errorf("all-zero thresholds should disable every check, got level=%v reasons=%v", a.Level, a.Reasons)
+	}
+}
+
+// TestEvaluateMediumDisabledHighStillFires pins that zeroing out just one tier
+// (e.g. MediumMBPerMin, a natural attempt to silence medium-level noise) only
+// disables that tier — it must not suppress or otherwise interfere with the
+// High/Critical tiers, which still fire at their own configured boundaries.
+func TestEvaluateMediumDisabledHighStillFires(t *testing.T) {
+	th := DefaultThresholds()
+	th.MediumMBPerMin = 0
+
+	belowHigh := Evaluate(window(mib(30), 0), true, th) // was MEDIUM at 30 MB/min
+	if belowHigh.Level != RiskLow {
+		t.Errorf("with medium disabled, a below-High rate should be LOW, got %v", belowHigh.Level)
+	}
+
+	atHigh := Evaluate(window(mib(int64(th.HighMBPerMin)), 0), true, th)
+	if atHigh.Level != RiskHigh {
+		t.Errorf("High threshold should still fire when only medium is disabled, got %v", atHigh.Level)
+	}
+}

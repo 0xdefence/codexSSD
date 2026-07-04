@@ -248,6 +248,8 @@ Full example showing every key and its default:
   rate thresholds (MB/min) that raise `watch`'s risk level.
 - `high_wal_size_mb` / `critical_wal_size_mb` — WAL file size thresholds.
 - `high_mem_mb` / `critical_mem_mb` — Codex process memory thresholds.
+- Setting any of the above thresholds to `0` (or a negative number) disables
+  that specific check rather than making it fire on everything.
 - `poll_interval_seconds` — how often `watch` re-checks `~/.codex` (clamped to
   a minimum of 5 seconds).
 - `bin_hold_days` — how long `clean --yes` backups are held before `prune` can
