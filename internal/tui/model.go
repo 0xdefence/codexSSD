@@ -14,6 +14,7 @@ import (
 
 	"github.com/0xdefence/codexssd/internal/cleaner"
 	"github.com/0xdefence/codexssd/internal/codex"
+	"github.com/0xdefence/codexssd/internal/config"
 	"github.com/0xdefence/codexssd/internal/monitor"
 )
 
@@ -48,6 +49,7 @@ type Model struct {
 	state    state
 	showHelp bool
 	width    int
+	cfg      config.Config
 
 	// status (populated by loadCmd in Task 2)
 	report    codex.LogReport
@@ -71,14 +73,14 @@ type Model struct {
 	releaseNote   string // note shown after an auto-release on start
 }
 
-// New returns the initial model.
-func New() Model {
-	return Model{state: stateDashboard}
+// New returns the initial model configured with cfg.
+func New(cfg config.Config) Model {
+	return Model{state: stateDashboard, cfg: cfg}
 }
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(loadCmd, tickCmd(), releaseCmd)
+	return tea.Batch(loadCmd, tickCmd(m.cfg.PollInterval()), releaseCmd)
 }
 
 // deadweight reports whether the Codex logs are large enough to emphasize.
@@ -115,6 +117,9 @@ func (m Model) soonestRelease() (time.Time, bool) {
 // Run launches the interactive app. Called by main when no subcommand is given.
 // Never called from tests.
 func Run() error {
-	_, err := tea.NewProgram(New(), tea.WithAltScreen()).Run()
+	// A malformed config must never block the dashboard from opening — the
+	// error is ignored because LoadDefault always returns usable defaults.
+	cfg, _ := config.LoadDefault()
+	_, err := tea.NewProgram(New(cfg), tea.WithAltScreen()).Run()
 	return err
 }

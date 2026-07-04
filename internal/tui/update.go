@@ -27,11 +27,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.memBytes = msg.memBytes
 		s := monitor.Sample{At: msg.at, TotalBytes: msg.report.TotalBytes, WALBytes: walBytes(msg.report), MemBytes: msg.memBytes}
 		m.samples = monitor.AppendSample(m.samples, s, maxSamples)
-		m.assessment = monitor.Evaluate(m.samples, m.running, monitor.DefaultThresholds())
+		m.assessment = monitor.Evaluate(m.samples, m.running, m.cfg.MonitorThresholds())
 		return m, nil
 	case tickMsg:
 		// Re-check ~/.codex and schedule the next tick. Does not touch m.state.
-		return m, tea.Batch(loadCmd, tickCmd())
+		return m, tea.Batch(loadCmd, tickCmd(m.cfg.PollInterval()))
 	case cleanResultMsg:
 		m.state = stateResult
 		if msg.err != nil {
@@ -94,7 +94,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "y":
 			m.state = stateCleaning
-			return m, cleanCmd
+			return m, cleanCmd(m.cfg.BinHold())
 		case "n", "esc":
 			m.state = stateDashboard
 			return m, nil

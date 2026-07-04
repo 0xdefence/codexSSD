@@ -20,9 +20,10 @@ var (
 	planLogs       = cleaner.PlanCodexLogs
 	listBackups    = cleaner.ListBackups
 	restoreBackup  = cleaner.Restore
-	// applyPlan moves a plan's logs aside and reports (dest, bytesMoved, err).
-	applyPlan = func(p cleaner.Plan) (string, int64, error) {
-		dest, err := p.Apply(time.Now())
+	// applyPlan moves a plan's logs aside, holding them for hold before they
+	// become eligible for release, and reports (dest, bytesMoved, err).
+	applyPlan = func(p cleaner.Plan, hold time.Duration) (string, int64, error) {
+		dest, err := p.ApplyWithHold(time.Now(), hold)
 		return dest, p.TotalBytes, err
 	}
 )
@@ -41,31 +42,33 @@ type blockedMsg struct {
 }
 
 // cleanCmd re-checks that Codex is stopped (authoritative gate), then moves the
-// logs aside. It NEVER calls applyPlan while Codex is running.
-func cleanCmd() tea.Msg {
-	running, runErr := isCodexRunning()
-	if runErr == codex.ErrUnsupportedPlatform {
-		return blockedMsg{reason: "This platform can't verify Codex is closed, so tidying is disabled here."}
+// logs aside held for hold. It NEVER calls applyPlan while Codex is running.
+func cleanCmd(hold time.Duration) tea.Cmd {
+	return func() tea.Msg {
+		running, runErr := isCodexRunning()
+		if runErr == codex.ErrUnsupportedPlatform {
+			return blockedMsg{reason: "This platform can't verify Codex is closed, so tidying is disabled here."}
+		}
+		if runErr != nil {
+			return cleanResultMsg{err: runErr}
+		}
+		if running {
+			return blockedMsg{reason: "Codex appears to be running. Close it first, then try again."}
+		}
+		dir, err := codexDir()
+		if err != nil {
+			return cleanResultMsg{err: err}
+		}
+		plan, err := planLogs(dir)
+		if err != nil {
+			return cleanResultMsg{err: err}
+		}
+		if plan.Empty() {
+			return cleanResultMsg{dest: "", movedBytes: 0}
+		}
+		dest, moved, err := applyPlan(plan, hold)
+		return cleanResultMsg{dest: dest, movedBytes: moved, err: err}
 	}
-	if runErr != nil {
-		return cleanResultMsg{err: runErr}
-	}
-	if running {
-		return blockedMsg{reason: "Codex appears to be running. Close it first, then try again."}
-	}
-	dir, err := codexDir()
-	if err != nil {
-		return cleanResultMsg{err: err}
-	}
-	plan, err := planLogs(dir)
-	if err != nil {
-		return cleanResultMsg{err: err}
-	}
-	if plan.Empty() {
-		return cleanResultMsg{dest: "", movedBytes: 0}
-	}
-	dest, moved, err := applyPlan(plan)
-	return cleanResultMsg{dest: dest, movedBytes: moved, err: err}
 }
 
 // restoreResultMsg reports the outcome of a restore.
@@ -156,7 +159,7 @@ func loadCmd() tea.Msg {
 // tickMsg fires on the poll interval to keep the dashboard live.
 type tickMsg struct{}
 
-// tickCmd schedules the next poll tick.
-func tickCmd() tea.Cmd {
-	return tea.Tick(pollInterval, func(time.Time) tea.Msg { return tickMsg{} })
+// tickCmd schedules the next poll tick after interval.
+func tickCmd(interval time.Duration) tea.Cmd {
+	return tea.Tick(interval, func(time.Time) tea.Msg { return tickMsg{} })
 }

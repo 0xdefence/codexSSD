@@ -121,3 +121,24 @@ func TestApplyRollsBackOnMoveFailure(t *testing.T) {
 		t.Errorf("logs_2.sqlite-wal should be untouched: info=%v err=%v", info, err)
 	}
 }
+
+func TestApplyWithHoldSetsManifestHoldUntil(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "logs_2.sqlite"), []byte("x"), 0o600)
+	plan, err := PlanCodexLogs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	dest, err := plan.ApplyWithHold(now, 3*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := readManifest(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := now.Add(3 * 24 * time.Hour); !m.HoldUntil.Equal(want) {
+		t.Errorf("HoldUntil = %v, want %v", m.HoldUntil, want)
+	}
+}

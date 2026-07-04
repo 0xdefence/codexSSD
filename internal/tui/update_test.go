@@ -11,6 +11,7 @@ import (
 
 	"github.com/0xdefence/codexssd/internal/cleaner"
 	"github.com/0xdefence/codexssd/internal/codex"
+	"github.com/0xdefence/codexssd/internal/config"
 	"github.com/0xdefence/codexssd/internal/monitor"
 )
 
@@ -40,7 +41,7 @@ func step(m Model, msg tea.Msg) (Model, tea.Cmd) {
 
 func TestQuitKeys(t *testing.T) {
 	for _, k := range []string{"q", "ctrl+c"} {
-		_, cmd := step(New(), key(k))
+		_, cmd := step(New(config.Default()), key(k))
 		if cmd == nil {
 			t.Fatalf("%q produced no command, want quit", k)
 		}
@@ -51,7 +52,7 @@ func TestQuitKeys(t *testing.T) {
 }
 
 func TestHelpToggle(t *testing.T) {
-	m := New()
+	m := New(config.Default())
 	if m.showHelp {
 		t.Fatal("help should start hidden")
 	}
@@ -66,7 +67,7 @@ func TestHelpToggle(t *testing.T) {
 }
 
 func TestWindowSizeStored(t *testing.T) {
-	m, _ := step(New(), tea.WindowSizeMsg{Width: 80, Height: 24})
+	m, _ := step(New(config.Default()), tea.WindowSizeMsg{Width: 80, Height: 24})
 	if m.width != 80 {
 		t.Errorf("width = %d, want 80", m.width)
 	}
@@ -91,7 +92,7 @@ func sampleLoaded() loadedMsg {
 }
 
 func TestLoadedPopulatesDashboard(t *testing.T) {
-	m, _ := step(New(), sampleLoaded())
+	m, _ := step(New(config.Default()), sampleLoaded())
 	if m.report.TotalBytes != 200*1024*1024 {
 		t.Errorf("report not stored: %d", m.report.TotalBytes)
 	}
@@ -110,7 +111,7 @@ func TestNotDeadweightBelowThreshold(t *testing.T) {
 	msg := sampleLoaded()
 	msg.report.TotalBytes = 1 * 1024 * 1024 // 1 MiB
 	msg.plan.TotalBytes = 1 * 1024 * 1024
-	m, _ := step(New(), msg)
+	m, _ := step(New(config.Default()), msg)
 	if m.deadweight() {
 		t.Error("1 MiB should not count as deadweight")
 	}
@@ -120,7 +121,7 @@ func TestLastTidyFromBackups(t *testing.T) {
 	when := time.Date(2026, 6, 20, 9, 0, 0, 0, time.UTC)
 	msg := sampleLoaded()
 	msg.backups = []cleaner.Backup{{Dir: "/b/20260620-090000", Manifest: cleaner.Manifest{MovedAt: when}}}
-	m, _ := step(New(), msg)
+	m, _ := step(New(config.Default()), msg)
 	got, ok := m.lastTidy()
 	if !ok || !got.Equal(when) {
 		t.Errorf("lastTidy = %v ok=%v, want %v", got, ok, when)
@@ -128,8 +129,8 @@ func TestLastTidyFromBackups(t *testing.T) {
 }
 
 func TestCleanKeyBlockedWhileRunning(t *testing.T) {
-	m, _ := step(New(), sampleLoaded()) // not running, has plan
-	m.running = true                    // Codex started
+	m, _ := step(New(config.Default()), sampleLoaded()) // not running, has plan
+	m.running = true                                    // Codex started
 	m, cmd := step(m, key("c"))
 	if m.state != stateBlocked {
 		t.Fatalf("state = %v, want stateBlocked", m.state)
@@ -140,7 +141,7 @@ func TestCleanKeyBlockedWhileRunning(t *testing.T) {
 }
 
 func TestCleanKeyOpensConfirm(t *testing.T) {
-	m, _ := step(New(), sampleLoaded()) // not running, 200 MiB plan
+	m, _ := step(New(config.Default()), sampleLoaded()) // not running, 200 MiB plan
 	m, _ = step(m, key("c"))
 	if m.state != stateConfirmClean {
 		t.Fatalf("state = %v, want stateConfirmClean", m.state)
@@ -148,7 +149,7 @@ func TestCleanKeyOpensConfirm(t *testing.T) {
 }
 
 func TestConfirmCleanYesDispatchesAndResult(t *testing.T) {
-	m, _ := step(New(), sampleLoaded())
+	m, _ := step(New(config.Default()), sampleLoaded())
 	m, _ = step(m, key("c")) // -> confirm
 	m, cmd := step(m, key("y"))
 	if m.state != stateCleaning {
@@ -168,7 +169,7 @@ func TestConfirmCleanYesDispatchesAndResult(t *testing.T) {
 }
 
 func TestConfirmCleanNoReturnsToDashboard(t *testing.T) {
-	m, _ := step(New(), sampleLoaded())
+	m, _ := step(New(config.Default()), sampleLoaded())
 	m, _ = step(m, key("c"))
 	m, _ = step(m, key("n"))
 	if m.state != stateDashboard {
@@ -183,9 +184,9 @@ func TestCleanCmdGateRefusesWhileRunning(t *testing.T) {
 
 	applied := false
 	isCodexRunning = func() (bool, error) { return true, nil }
-	applyPlan = func(p cleaner.Plan) (string, int64, error) { applied = true; return "", 0, nil }
+	applyPlan = func(p cleaner.Plan, hold time.Duration) (string, int64, error) { applied = true; return "", 0, nil }
 
-	msg := cleanCmd()
+	msg := cleanCmd(config.Default().BinHold())()
 	if _, ok := msg.(blockedMsg); !ok {
 		t.Fatalf("cleanCmd returned %T, want blockedMsg", msg)
 	}
@@ -204,7 +205,7 @@ func loadedWithBackup() loadedMsg {
 }
 
 func TestRestoreKeyOpensListWhenBackupsExist(t *testing.T) {
-	m, _ := step(New(), loadedWithBackup())
+	m, _ := step(New(config.Default()), loadedWithBackup())
 	m, _ = step(m, key("r"))
 	if m.state != stateRestoreList {
 		t.Fatalf("state = %v, want stateRestoreList", m.state)
@@ -215,7 +216,7 @@ func TestRestoreKeyOpensListWhenBackupsExist(t *testing.T) {
 }
 
 func TestRestoreKeyNoBackupsShowsResult(t *testing.T) {
-	m, _ := step(New(), sampleLoaded()) // no backups
+	m, _ := step(New(config.Default()), sampleLoaded()) // no backups
 	m, _ = step(m, key("r"))
 	if m.state != stateResult {
 		t.Fatalf("state = %v, want stateResult", m.state)
@@ -226,7 +227,7 @@ func TestRestoreKeyNoBackupsShowsResult(t *testing.T) {
 }
 
 func TestRestoreConfirmYesDispatches(t *testing.T) {
-	m, _ := step(New(), loadedWithBackup())
+	m, _ := step(New(config.Default()), loadedWithBackup())
 	m, _ = step(m, key("r"))     // list
 	m, _ = step(m, key("enter")) // select -> confirm
 	if m.state != stateConfirmRestore {
@@ -275,7 +276,7 @@ func TestCleanCmdMovesWhenNotRunning(t *testing.T) {
 	codexDir = func() (string, error) { return dir, nil }
 	isCodexRunning = func() (bool, error) { return false, nil }
 
-	msg := cleanCmd()
+	msg := cleanCmd(config.Default().BinHold())()
 	res, ok := msg.(cleanResultMsg)
 	if !ok {
 		t.Fatalf("cleanCmd returned %T, want cleanResultMsg", msg)
@@ -292,7 +293,7 @@ func TestCleanCmdMovesWhenNotRunning(t *testing.T) {
 }
 
 func TestTickKeepsWatchingWithoutChangingState(t *testing.T) {
-	m, _ := step(New(), sampleLoaded()) // on dashboard
+	m, _ := step(New(config.Default()), sampleLoaded()) // on dashboard
 	next, cmd := step(m, tickMsg{})
 	if next.state != stateDashboard {
 		t.Errorf("tick changed state to %v, want stateDashboard", next.state)
@@ -303,7 +304,7 @@ func TestTickKeepsWatchingWithoutChangingState(t *testing.T) {
 }
 
 func TestLoadedMsgDoesNotChangeState(t *testing.T) {
-	m, _ := step(New(), sampleLoaded())
+	m, _ := step(New(config.Default()), sampleLoaded())
 	m.state = stateConfirmClean // user is mid-confirm
 	next, _ := step(m, sampleLoaded())
 	if next.state != stateConfirmClean {
@@ -312,7 +313,7 @@ func TestLoadedMsgDoesNotChangeState(t *testing.T) {
 }
 
 func TestBannerActionableWhenIdleDeadweight(t *testing.T) {
-	m, _ := step(New(), sampleLoaded()) // 200 MiB, not running
+	m, _ := step(New(config.Default()), sampleLoaded()) // 200 MiB, not running
 	if got := m.bannerState(); got != bannerActionable {
 		t.Errorf("bannerState = %v, want bannerActionable", got)
 	}
@@ -322,7 +323,7 @@ func TestBannerActionableWhenIdleDeadweight(t *testing.T) {
 }
 
 func TestBannerInformationalWhenCodexActive(t *testing.T) {
-	m, _ := step(New(), sampleLoaded())
+	m, _ := step(New(config.Default()), sampleLoaded())
 	m.running = true
 	if got := m.bannerState(); got != bannerInformational {
 		t.Errorf("bannerState = %v, want bannerInformational", got)
@@ -336,14 +337,14 @@ func TestBannerInformationalWhenCodexActive(t *testing.T) {
 func TestBannerCalmBelowThreshold(t *testing.T) {
 	msg := sampleLoaded()
 	msg.report.TotalBytes = 1 * 1024 * 1024
-	m, _ := step(New(), msg)
+	m, _ := step(New(config.Default()), msg)
 	if got := m.bannerState(); got != bannerCalm {
 		t.Errorf("bannerState = %v, want bannerCalm", got)
 	}
 }
 
 func TestReleasedMsgShowsNoteAndReloads(t *testing.T) {
-	m := New()
+	m := New(config.Default())
 	m, cmd := step(m, releasedMsg{ids: []string{"a", "b"}})
 	if !strings.Contains(m.releaseNote, "2") {
 		t.Errorf("releaseNote = %q, want it to mention 2", m.releaseNote)
@@ -355,7 +356,7 @@ func TestReleasedMsgShowsNoteAndReloads(t *testing.T) {
 
 func TestDashboardShowsRecyclingBin(t *testing.T) {
 	msg := loadedWithBackup() // one backup, HoldUntil 2026-06-26 10:00
-	m, _ := step(New(), msg)
+	m, _ := step(New(config.Default()), msg)
 	view := m.View()
 	if !strings.Contains(view, "Recycling bin") {
 		t.Errorf("dashboard should show a recycling-bin line:\n%s", view)
@@ -363,7 +364,7 @@ func TestDashboardShowsRecyclingBin(t *testing.T) {
 }
 
 func TestRestoreListShowsReleaseDate(t *testing.T) {
-	m, _ := step(New(), loadedWithBackup())
+	m, _ := step(New(config.Default()), loadedWithBackup())
 	m, _ = step(m, key("r"))
 	if !strings.Contains(m.View(), "releases") {
 		t.Errorf("restore list should show each backup's release date:\n%s", m.View())
@@ -373,7 +374,7 @@ func TestRestoreListShowsReleaseDate(t *testing.T) {
 func TestLoadedMsgCarriesMemBytesIntoSample(t *testing.T) {
 	msg := sampleLoaded()
 	msg.memBytes = 3 << 30 // 3 GiB
-	m, _ := step(New(), msg)
+	m, _ := step(New(config.Default()), msg)
 	if got := m.samples[len(m.samples)-1].MemBytes; got != 3<<30 {
 		t.Errorf("samples[last].MemBytes = %d, want %d", got, int64(3<<30))
 	}
@@ -381,7 +382,7 @@ func TestLoadedMsgCarriesMemBytesIntoSample(t *testing.T) {
 
 func TestHighRiskDrivesActionableBanner(t *testing.T) {
 	base := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
-	m := New()
+	m := New(config.Default())
 	// First sample: small, idle.
 	first := sampleLoaded()
 	first.report.TotalBytes = 10 * 1024 * 1024

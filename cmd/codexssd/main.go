@@ -20,6 +20,7 @@ import (
 	"github.com/0xdefence/codexssd/internal/agent"
 	"github.com/0xdefence/codexssd/internal/cleaner"
 	"github.com/0xdefence/codexssd/internal/codex"
+	"github.com/0xdefence/codexssd/internal/config"
 	"github.com/0xdefence/codexssd/internal/recorder"
 	"github.com/0xdefence/codexssd/internal/self"
 	"github.com/0xdefence/codexssd/internal/tui"
@@ -128,6 +129,16 @@ func cmdStatus(args []string) int {
 	return 0
 }
 
+// loadConfig returns the user config, warning (not failing) on a malformed
+// file — a broken config must never block a command.
+func loadConfig() config.Config {
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codexssd: note: %v — using default settings.\n", err)
+	}
+	return cfg
+}
+
 // isCodexRunning is the process-check used by the file-mutating commands. It is
 // a package variable so tests can substitute a deterministic stub, making the
 // safety gate (refuse while Codex is running) verifiable on any machine without
@@ -203,7 +214,8 @@ func cmdClean(args []string) int {
 		return 0
 	}
 
-	dest, err := plan.Apply(time.Now())
+	cfg := loadConfig()
+	dest, err := plan.ApplyWithHold(time.Now(), cfg.BinHold())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "codexssd: clean failed: %v\n", err)
 		return 1
