@@ -133,3 +133,72 @@ func TestEvaluateNoIdleEscalationWhenRunning(t *testing.T) {
 		}
 	}
 }
+
+func TestEvaluateMemoryEscalation(t *testing.T) {
+	base := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	th := DefaultThresholds()
+
+	t.Run("high memory escalates to HIGH", func(t *testing.T) {
+		s := []Sample{{At: base, TotalBytes: 0, MemBytes: 3 * 1024 * 1024 * 1024}} // 3 GiB
+		a := Evaluate(s, true, th)
+		if a.Level != RiskHigh {
+			t.Errorf("Level = %v, want HIGH", a.Level)
+		}
+	})
+
+	t.Run("critical memory escalates to CRITICAL", func(t *testing.T) {
+		s := []Sample{{At: base, MemBytes: 7 * 1024 * 1024 * 1024}} // 7 GiB
+		a := Evaluate(s, true, th)
+		if a.Level != RiskCritical {
+			t.Errorf("Level = %v, want CRITICAL", a.Level)
+		}
+	})
+
+	t.Run("modest memory stays LOW", func(t *testing.T) {
+		s := []Sample{{At: base, MemBytes: 512 * 1024 * 1024}}
+		if a := Evaluate(s, true, th); a.Level != RiskLow {
+			t.Errorf("Level = %v, want LOW", a.Level)
+		}
+	})
+
+	t.Run("zero mem thresholds disable the check", func(t *testing.T) {
+		off := th
+		off.HighMemMB, off.CriticalMemMB = 0, 0
+		s := []Sample{{At: base, MemBytes: 64 * 1024 * 1024 * 1024}}
+		if a := Evaluate(s, true, off); a.Level != RiskLow {
+			t.Errorf("Level = %v, want LOW when disabled", a.Level)
+		}
+	})
+}
+
+// TestEvaluateZeroThresholdsDisableEverything pins that an all-zero config (a
+// natural way to try to disable the monitor entirely) results in RiskLow, not
+// "every check instantly trips because 0 >= 0". Rate and WAL checks need the
+// same >0 guard the memory checks already have.
+func TestEvaluateZeroThresholdsDisableEverything(t *testing.T) {
+	var zero Thresholds // every field zero
+	huge := window(mib(100000), mib(50000))
+	a := Evaluate(huge, true, zero)
+	if a.Level != RiskLow {
+		t.Errorf("all-zero thresholds should disable every check, got level=%v reasons=%v", a.Level, a.Reasons)
+	}
+}
+
+// TestEvaluateMediumDisabledHighStillFires pins that zeroing out just one tier
+// (e.g. MediumMBPerMin, a natural attempt to silence medium-level noise) only
+// disables that tier — it must not suppress or otherwise interfere with the
+// High/Critical tiers, which still fire at their own configured boundaries.
+func TestEvaluateMediumDisabledHighStillFires(t *testing.T) {
+	th := DefaultThresholds()
+	th.MediumMBPerMin = 0
+
+	belowHigh := Evaluate(window(mib(30), 0), true, th) // was MEDIUM at 30 MB/min
+	if belowHigh.Level != RiskLow {
+		t.Errorf("with medium disabled, a below-High rate should be LOW, got %v", belowHigh.Level)
+	}
+
+	atHigh := Evaluate(window(mib(int64(th.HighMBPerMin)), 0), true, th)
+	if atHigh.Level != RiskHigh {
+		t.Errorf("High threshold should still fire when only medium is disabled, got %v", atHigh.Level)
+	}
+}

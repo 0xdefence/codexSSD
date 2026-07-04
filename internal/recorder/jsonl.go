@@ -26,14 +26,48 @@ const FileName = "sessions.jsonl"
 // maxRecords caps how many session receipts are kept (oldest trimmed first).
 const maxRecords = 1000
 
-// Receipt is the single record appended at the end of a session.
+// Receipt is the single record appended at the end of a session or mutation.
 type Receipt struct {
 	At           time.Time `json:"at"`
-	DurationSec  float64   `json:"duration_sec"`
-	DiskWritten  int64     `json:"disk_written_bytes"`
-	PeakMBPerMin float64   `json:"peak_mb_per_min"`
-	FilesChanged int       `json:"files_changed"`
-	Risk         string    `json:"risk"`
+	Action       string    `json:"action"` // "clean" | "restore" | "prune" | "watch"
+	DurationSec  float64   `json:"duration_sec,omitempty"`
+	DiskWritten  int64     `json:"disk_written_bytes,omitempty"`
+	PeakMBPerMin float64   `json:"peak_mb_per_min,omitempty"`
+	FilesChanged int       `json:"files_changed,omitempty"`
+	Risk         string    `json:"risk,omitempty"`
+	BytesMoved   int64     `json:"bytes_moved,omitempty"`
+	BackupID     string    `json:"backup_id,omitempty"`
+	BackupIDs    []string  `json:"backup_ids,omitempty"`
+}
+
+// Summary condenses the session history for the `self` report.
+type Summary struct {
+	Records    int       `json:"records"`
+	LastAction string    `json:"last_action,omitempty"`
+	LastAt     time.Time `json:"last_at"`
+}
+
+// SummarizeFile reads the JSONL history at path. A missing file is an empty
+// (not error) summary. Corrupt lines are skipped — history is bookkeeping,
+// and a damaged line must not take down the report.
+func SummarizeFile(path string) (Summary, error) {
+	lines, err := readLines(path)
+	if err != nil {
+		return Summary{}, err
+	}
+	var s Summary
+	for _, l := range lines {
+		var r Receipt
+		if json.Unmarshal([]byte(l), &r) != nil {
+			continue
+		}
+		s.Records++
+		if !r.At.Before(s.LastAt) {
+			s.LastAt = r.At
+			s.LastAction = r.Action
+		}
+	}
+	return s, nil
 }
 
 // Dir returns the absolute path to CodexSSD's state directory (~/.codexssd).

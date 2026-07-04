@@ -111,6 +111,9 @@ func (m Model) renderDashboard() string {
 	default:
 		fmt.Fprintln(&b, "Codex doesn't appear to be running.")
 	}
+	if m.running && m.memBytes > 0 {
+		fmt.Fprintf(&b, "Codex memory:  %s\n", codex.HumanBytes(m.memBytes))
+	}
 
 	if t, ok := m.lastTidy(); ok {
 		fmt.Fprintf(&b, "Recycling bin: %d backup(s) (last tidy %s)\n", len(m.backups), t.Format("2006-01-02 15:04"))

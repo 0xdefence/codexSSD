@@ -34,6 +34,19 @@ func TestMeasureSumsStateDir(t *testing.T) {
 	}
 }
 
+func TestMeasureIncludesHistorySummary(t *testing.T) {
+	dir := t.TempDir()
+	line := `{"at":"2026-07-04T12:00:00Z","action":"clean","bytes_moved":42}` + "\n"
+	os.WriteFile(filepath.Join(dir, "sessions.jsonl"), []byte(line), 0o600)
+	r, err := Measure(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Records != 1 || r.LastAction != "clean" {
+		t.Errorf("got %+v", r)
+	}
+}
+
 func TestMeasureMissingDirIsZero(t *testing.T) {
 	r, err := Measure(filepath.Join(t.TempDir(), "does-not-exist"))
 	if err != nil {

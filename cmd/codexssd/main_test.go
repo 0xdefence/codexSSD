@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/0xdefence/codexssd/internal/cleaner"
+	"github.com/0xdefence/codexssd/internal/visibility"
 )
 
 func TestRenderPlanEmpty(t *testing.T) {
@@ -194,5 +195,24 @@ func TestPruneBadFlag(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	if code := cmdPrune([]string{"--nope"}); code != 2 {
 		t.Errorf("prune bad flag exit = %d, want 2", code)
+	}
+}
+
+func TestRenderVisibilityReport(t *testing.T) {
+	r := visibility.Report{
+		Dir: "/home/x/.codex", DirExists: true, TotalBytes: 500,
+		Entries: []visibility.Entry{
+			{Name: "sessions", IsDir: true, TotalBytes: 500, FileCount: 2,
+				NewestMod: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC), Stale: true},
+		},
+	}
+	var buf bytes.Buffer
+	renderVisibility(&buf, r)
+	out := buf.String()
+	if !strings.Contains(out, "sessions") || !strings.Contains(out, "March 2026") {
+		t.Errorf("output missing pieces:\n%s", out)
+	}
+	if !strings.Contains(out, "yours to decide") {
+		t.Errorf("report must end with the report-only pointer:\n%s", out)
 	}
 }

@@ -20,9 +20,12 @@ import (
 	"github.com/0xdefence/codexssd/internal/agent"
 	"github.com/0xdefence/codexssd/internal/cleaner"
 	"github.com/0xdefence/codexssd/internal/codex"
+	"github.com/0xdefence/codexssd/internal/config"
+	"github.com/0xdefence/codexssd/internal/mcpserver"
 	"github.com/0xdefence/codexssd/internal/recorder"
 	"github.com/0xdefence/codexssd/internal/self"
 	"github.com/0xdefence/codexssd/internal/tui"
+	"github.com/0xdefence/codexssd/internal/visibility"
 )
 
 const usage = `codexssd - a low-write local watchdog for AI coding agents
@@ -32,12 +35,14 @@ Usage:
 
 Commands:
   status         Show Codex's log files and their sizes (read-only)
+  report         Show what's using disk inside ~/.codex (read-only)
   watch          Watch a running Codex agent and warn on risky activity
   clean          Move Codex's own logs aside into a recoverable recycling bin
   restore        Move previously cleaned logs back from the recycling bin
   prune          Release recycling-bin backups past their ~2-week hold to the Trash
   install-agent  Write a disk/token-safe AGENTS.md into a repo (--profile, --force, --print)
   self           Report CodexSSD's own footprint
+  mcp            Serve read-only CodexSSD tools to AI agents over stdio (MCP)
   help           Show this help
 
 Run "codexssd <command> -h" for command-specific flags.
@@ -60,8 +65,10 @@ func run(args []string) int {
 	switch cmd {
 	case "status":
 		return cmdStatus(rest)
+	case "report":
+		return cmdReport(rest)
 	case "watch":
-		return cmdNotImplemented("watch")
+		return cmdWatch(rest)
 	case "clean":
 		return cmdClean(rest)
 	case "restore":
@@ -72,6 +79,12 @@ func run(args []string) int {
 		return cmdInstallAgent(rest)
 	case "self":
 		return cmdSelf(rest)
+	case "mcp":
+		if err := mcpserver.New().Serve(os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "codexssd: mcp server error: %v\n", err)
+			return 1
+		}
+		return 0
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return 0
@@ -79,14 +92,6 @@ func run(args []string) int {
 		fmt.Fprintf(os.Stderr, "codexssd: unknown command %q\n\n%s", cmd, usage)
 		return 2
 	}
-}
-
-// cmdNotImplemented is a placeholder for Phase 1 commands whose home exists but
-// whose behavior has not landed yet. Keeping them in the dispatch makes the
-// planned CLI surface visible and testable.
-func cmdNotImplemented(name string) int {
-	fmt.Fprintf(os.Stderr, "codexssd: %q is planned for Phase 1 but not implemented yet.\n", name)
-	return 1
 }
 
 // cmdStatus implements `codexssd status`.
@@ -128,11 +133,31 @@ func cmdStatus(args []string) int {
 	return 0
 }
 
+// loadConfig returns the user config, warning (not failing) on a malformed
+// file — a broken config must never block a command.
+func loadConfig() config.Config {
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codexssd: note: %v — using default settings.\n", err)
+	}
+	return cfg
+}
+
 // isCodexRunning is the process-check used by the file-mutating commands. It is
 // a package variable so tests can substitute a deterministic stub, making the
 // safety gate (refuse while Codex is running) verifiable on any machine without
 // a real Codex process or dependence on the host's process table.
 var isCodexRunning = codex.IsCodexRunning
+
+// appendReceipt records a session receipt. A failed receipt is a note, never
+// an error — bookkeeping must not fail the user's action.
+var appendReceipt = recorder.Append
+
+func recordReceipt(r recorder.Receipt) {
+	if err := appendReceipt(r); err != nil {
+		fmt.Fprintf(os.Stderr, "codexssd: note: couldn't record session receipt: %v\n", err)
+	}
+}
 
 // cmdClean implements `codexssd clean`.
 //
@@ -203,13 +228,15 @@ func cmdClean(args []string) int {
 		return 0
 	}
 
-	dest, err := plan.Apply(time.Now())
+	cfg := loadConfig()
+	dest, err := plan.ApplyWithHold(time.Now(), cfg.BinHold())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "codexssd: clean failed: %v\n", err)
 		return 1
 	}
 	fmt.Printf("Moved %s of Codex logs aside to:\n  %s\n", codex.HumanBytes(plan.TotalBytes), dest)
 	fmt.Println("Nothing was deleted. Restore them any time with \"codexssd restore\".")
+	recordReceipt(recorder.Receipt{At: time.Now(), Action: "clean", BytesMoved: plan.TotalBytes, FilesChanged: len(plan.Items), BackupID: filepath.Base(dest)})
 	return 0
 }
 
@@ -311,6 +338,7 @@ func cmdRestore(args []string) int {
 				fmt.Fprintf(os.Stderr, "codexssd: restore failed: %v\n", err)
 				return 1
 			}
+			recordReceipt(recorder.Receipt{At: time.Now(), Action: "restore", BackupID: id})
 			if *jsonOut {
 				return emitJSON(map[string]any{
 					"status":    "restored",
@@ -372,6 +400,61 @@ func printStatus(r codex.LogReport) {
 	}
 }
 
+// cmdReport implements `codexssd report`.
+//
+// SAFETY: 100% read-only, and scoped to ~/.codex ONLY. It reports and points;
+// it never acts and never suggests CodexSSD act on anything beyond its own
+// known log files.
+func cmdReport(args []string) int {
+	fs := flag.NewFlagSet("report", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "output the report as JSON")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: codexssd report [--json]\n\n")
+		fmt.Fprintf(os.Stderr, "Show what's using disk inside ~/.codex (read-only).\n\n")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	dir, err := codex.Dir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codexssd: could not determine your home directory: %v\n", err)
+		return 1
+	}
+	cfg := loadConfig()
+	rep := visibility.Scan(dir, time.Now(), cfg.StaleAfter())
+	if *jsonOut {
+		return emitJSON(rep)
+	}
+	renderVisibility(os.Stdout, rep)
+	return 0
+}
+
+// renderVisibility prints the disk report in plain language.
+func renderVisibility(w io.Writer, r visibility.Report) {
+	if !r.DirExists {
+		fmt.Fprintf(w, "No Codex directory found at %s — nothing is using disk here.\n", r.Dir)
+		return
+	}
+	fmt.Fprintf(w, "Disk use inside %s (%s total):\n\n", r.Dir, codex.HumanBytes(r.TotalBytes))
+	for _, e := range r.Entries {
+		line := fmt.Sprintf("  %-24s %10s  (%d files)", e.Name, codex.HumanBytes(e.TotalBytes), e.FileCount)
+		if e.Stale {
+			line += fmt.Sprintf(" — untouched since %s", e.NewestMod.Format("January 2006"))
+		}
+		if e.IsOurs {
+			line += "  [CodexSSD's own recycling bin]"
+		}
+		if e.ReadError != "" {
+			line += "  (couldn't read everything here)"
+		}
+		fmt.Fprintln(w, line)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "CodexSSD only ever tidies its known Codex log files; the rest is")
+	fmt.Fprintln(w, "yours to decide on. Nothing above has been touched.")
+}
+
 // cmdPrune implements `codexssd prune`: release backups past their hold to the
 // OS Trash. --dry-run lists what would be released (read-only).
 func cmdPrune(args []string) int {
@@ -423,6 +506,9 @@ func cmdPrune(args []string) int {
 		fmt.Fprintf(os.Stderr, "codexssd: prune failed: %v\n", err)
 		return 1
 	}
+	if len(released) > 0 {
+		recordReceipt(recorder.Receipt{At: time.Now(), Action: "prune", BackupIDs: released})
+	}
 	if *jsonOut {
 		if released == nil {
 			released = []string{} // emit [] not null for empty
@@ -467,6 +553,11 @@ func cmdSelf(args []string) int {
 	fmt.Println("CodexSSD's own footprint:")
 	fmt.Printf("  mode:     %s\n", rep.Mode)
 	fmt.Printf("  storage:  %s  (%s)\n", codex.HumanBytes(rep.HistoryBytes), rep.StateDir)
+	if rep.Records > 0 {
+		fmt.Printf("  history:  %d recorded action(s), last: %s\n", rep.Records, rep.LastAction)
+	} else {
+		fmt.Println("  history:  no recorded actions yet")
+	}
 	return 0
 }
 

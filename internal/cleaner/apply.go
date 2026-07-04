@@ -33,14 +33,20 @@ type Manifest struct {
 	Items     []ManifestItem `json:"items"`
 }
 
-// Apply moves the planned files into a new timestamped backup directory and
-// writes a manifest. It returns the backup directory path.
+// Apply moves the planned files aside with the default 14-day hold.
+func (p Plan) Apply(now time.Time) (string, error) {
+	return p.ApplyWithHold(now, RetentionDays*24*time.Hour)
+}
+
+// ApplyWithHold moves the planned files into a new timestamped backup directory
+// and writes a manifest whose HoldUntil is now+hold. It returns the backup
+// directory path.
 //
 // SAFETY: MOVES via os.Rename only — it never deletes a log file. Every item is
 // re-checked against isCodexLog before being moved. On any move failure, files
 // already moved this call are moved back (rollback) so a torn database is never
 // left behind. `now` is injected so the directory name is deterministic/testable.
-func (p Plan) Apply(now time.Time) (string, error) {
+func (p Plan) ApplyWithHold(now time.Time, hold time.Duration) (string, error) {
 	if p.Empty() {
 		return "", errors.New("nothing to move aside")
 	}
@@ -57,7 +63,7 @@ func (p Plan) Apply(now time.Time) (string, error) {
 
 	manifest := Manifest{
 		MovedAt:   now,
-		HoldUntil: now.AddDate(0, 0, RetentionDays),
+		HoldUntil: now.Add(hold),
 	}
 	// moved tracks (from, to) pairs for rollback on failure.
 	var moved [][2]string
