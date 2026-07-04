@@ -21,6 +21,7 @@ import (
 	"github.com/0xdefence/codexssd/internal/cleaner"
 	"github.com/0xdefence/codexssd/internal/codex"
 	"github.com/0xdefence/codexssd/internal/config"
+	"github.com/0xdefence/codexssd/internal/mcpserver"
 	"github.com/0xdefence/codexssd/internal/recorder"
 	"github.com/0xdefence/codexssd/internal/self"
 	"github.com/0xdefence/codexssd/internal/tui"
@@ -41,6 +42,7 @@ Commands:
   prune          Release recycling-bin backups past their ~2-week hold to the Trash
   install-agent  Write a disk/token-safe AGENTS.md into a repo (--profile, --force, --print)
   self           Report CodexSSD's own footprint
+  mcp            Serve read-only CodexSSD tools to AI agents over stdio (MCP)
   help           Show this help
 
 Run "codexssd <command> -h" for command-specific flags.
@@ -77,6 +79,12 @@ func run(args []string) int {
 		return cmdInstallAgent(rest)
 	case "self":
 		return cmdSelf(rest)
+	case "mcp":
+		if err := mcpserver.New().Serve(os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "codexssd: mcp server error: %v\n", err)
+			return 1
+		}
+		return 0
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return 0
