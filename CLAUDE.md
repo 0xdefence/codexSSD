@@ -36,24 +36,44 @@ machine. Any change that weakens them is wrong by definition.
    memory; write only a tiny session receipt at the end.
 5. **Check before touching.** Don't act on a file that may be in active use
    (e.g. Codex mid-write).
+6. **Notifications are fire-and-forget.** Desktop notifications from `watch`
+   (`internal/notify`) are best-effort only — a failure or delay there must
+   never block, slow, or fail the watch loop; terminal output is always the
+   source of truth.
+7. **`internal/mcpserver` is read-only by definition.** It exposes exactly
+   five read-only tools (`codex_status`, `clean_plan`, `list_backups`,
+   `self_report`, `disk_report`) and may never gain a mutating tool — an agent
+   using it can see everything and touch nothing.
 
 ## Current state
 
-`codexssd` with no arguments now launches the interactive dashboard (`internal/tui`).
+`codexssd` with no arguments launches the interactive dashboard (`internal/tui`).
 
-Phase 1, three commands implemented:
+Phase 1 and Phase 2 are implemented. All commands:
 
 - **`status`** — 100% read-only (`os.Stat` on Codex's known log files; supports
   `--json`).
+- **`watch`** — foreground, read-only monitor over Codex's logs and memory;
+  prints on risk-level change, fires best-effort desktop notifications
+  (`internal/notify`) on escalation, records one session receipt on exit.
+  Supports `--interval`, `--no-notify`, `--json`.
 - **`clean`** — dry-run by default; with `--yes` moves Codex's own logs aside to
   a recoverable recycling bin via `internal/cleaner`. Refuses if Codex is
   running. Supports `--json`.
 - **`restore`** — lists recoverable backups; with a backup id moves files back to
   their original `~/.codex/` location. Refuses if Codex is running. Supports
   `--json`.
-
-Everything else (`watch`, `install-agent`, `self`) is a documented stub with a
-package comment and no logic yet.
+- **`prune`** — releases recycling-bin backups past their hold to the OS Trash
+  (`internal/trash`). Supports `--dry-run`, `--json`.
+- **`report`** — read-only disk-usage breakdown of `~/.codex` via
+  `internal/visibility`, with stale-entry flags. Supports `--json`.
+- **`install-agent`** — writes a disk/token-safe `AGENTS.md` via
+  `internal/agent`. Supports `--profile`, `--force`, `--print`.
+- **`self`** — reports CodexSSD's own footprint via `internal/self`. Supports
+  `--json`.
+- **`mcp`** — serves the five read-only MCP tools over stdio via
+  `internal/mcpserver`.
+- bare `codexssd` (no subcommand) — the interactive TUI dashboard.
 
 When implementing a new command, keep read-only behavior read-only, and keep
 file-mutating behavior confined to `internal/cleaner` acting only on the
@@ -62,14 +82,20 @@ file-mutating behavior confined to `internal/cleaner` acting only on the
 ## Layout
 
 ```
-cmd/codexssd/        CLI entry point + command dispatch (main.go)
-internal/codex/      Codex paths, known log files, size reporting  ← implemented
-internal/monitor/    watcher + risk engine (stub)
-internal/cleaner/    move-aside recycling-bin tidier (stub)
-internal/agent/      AGENTS.md "please behave" installer (stub)
-internal/recorder/   JSONL session history, NO database (stub)
-internal/self/       CodexSSD's own-footprint self-report (stub)
-docs/                full design spec (mirrored from Notion)
+cmd/codexssd/         CLI entry point + command dispatch (main.go, watch.go)
+internal/codex/       Codex paths, known log files, size reporting
+internal/monitor/     watcher + risk engine
+internal/cleaner/     move-aside recycling-bin tidier
+internal/agent/       AGENTS.md "please behave" installer
+internal/recorder/    JSONL session history, NO database
+internal/self/        CodexSSD's own-footprint self-report
+internal/config/      ~/.codexssd/config.json loader (never bricks the tool)
+internal/visibility/  `report`'s ~/.codex disk-usage scan
+internal/notify/      best-effort desktop notifications for `watch`
+internal/mcpserver/   read-only MCP server (stdio) for `mcp`
+internal/tui/         interactive dashboard (bare `codexssd`)
+internal/trash/       OS Trash integration for `prune`
+docs/                 full design spec (mirrored from Notion)
 ```
 
 The display name is **CodexSSD**; the module, binary, and command are the
@@ -86,6 +112,10 @@ lowercase `codexssd` (Go module paths are conventionally lowercase). Module path
 - Human-readable sizes use binary units (KiB/MiB/GiB) via `codex.HumanBytes`.
 - Friendly, plain-language user output — this tool is for non-technical users too.
 - Comment the *why* (especially safety intent), match surrounding style.
+- **Config can never brick the tool.** `internal/config` unmarshals onto
+  `Default()`, so a missing file yields defaults and a malformed file yields
+  defaults plus a warning — never a fatal error. Any code that reads config
+  must preserve this: warn and carry on, never fail the command.
 
 ## Commands
 

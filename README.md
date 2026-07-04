@@ -132,24 +132,159 @@ codexssd restore --json      # list backups as JSON
 bin to their original `~/.codex/` locations. Like `clean --yes`, it refuses to
 act if Codex is running.
 
-## Phase 1 scope
+### `report` — what's using disk inside `~/.codex` (read-only)
 
-This repo is at the start of **Phase 1 — The Watchdog (the safe core)**. The
-plan is to build in order of *safety earned*: the earliest versions can only
-watch, warn, and tidy the AI tool's own recoverable mess.
+```bash
+codexssd report          # plain-language breakdown of everything in ~/.codex
+codexssd report --json   # the same report as JSON
+```
 
-Phase 1 covers (read-only first, safe actions later):
+Unlike `status` (which only looks at Codex's known log files), `report` walks
+the whole `~/.codex` directory and shows every entry's size, file count, and
+whether it looks stale (untouched for a while — configurable via
+`stale_after_days`). It flags CodexSSD's own recycling bin so you can tell it
+apart from Codex's data. It only ever reports — it never acts on anything
+outside Codex's own known log files.
 
-- Watching Codex and reporting its log-file sizes — **`status` is done**
-- Plain-language warnings when disk/memory use gets alarming
-- Safely clearing Codex's *own* logs into a recoverable recycling bin — **`clean` is done**
-- Restoring cleaned logs from the recycling bin — **`restore` is done**
-- A "please behave" `AGENTS.md` rules installer
-- Honest self-reporting of CodexSSD's own footprint
+### `watch` — foreground monitor with warnings (read-only)
 
-Deliberately **out of scope** for now: deleting anything automatically, acting on
-your real project files, deep code relationship-mapping, and support for other AI
-tools. See [`docs/scope.md`](docs/scope.md) for the full line in the sand.
+```bash
+codexssd watch                 # watch in the foreground; Ctrl-C to stop
+codexssd watch --interval 10s  # check more often than the default (config, 30s)
+codexssd watch --no-notify     # suppress desktop notifications
+codexssd watch --json          # emit one JSON line per risk-level change
+```
+
+`watch` samples Codex's log sizes and memory use on a timer and prints a line
+whenever the risk level changes (calm sessions stay quiet). If things escalate
+to a high or critical level, it fires a best-effort desktop notification —
+notifications are fire-and-forget and never block or fail the watch loop.
+On exit it writes one small session receipt to CodexSSD's own history; it
+never touches Codex's files.
+
+### `prune` — release expired recycling-bin backups to the Trash
+
+```bash
+codexssd prune             # move backups past their ~2-week hold to the OS Trash
+codexssd prune --dry-run   # just list what would be released, touches nothing
+codexssd prune --json      # output as JSON
+```
+
+Backups moved aside by `clean --yes` are held for `bin_hold_days` (14 by
+default) in case you want them back. `prune` releases only the ones that have
+passed their hold — into the OS Trash, not permanent deletion, so the normal
+Trash-recovery flow still applies.
+
+### `install-agent` — write a disk/token-safe `AGENTS.md`
+
+```bash
+codexssd install-agent                        # write AGENTS.md into the current directory
+codexssd install-agent --profile strict path/  # choose a rule profile, target a specific repo
+codexssd install-agent --print                 # preview the rules without writing anything
+codexssd install-agent --force                 # overwrite an existing AGENTS.md
+```
+
+Installs a "please behave" `AGENTS.md` with disk/token-safe rules for the AI
+agent working in a repo, to reduce mess at the source. It refuses to overwrite
+an existing `AGENTS.md` unless you pass `--force`; `--print` lets you preview
+the rules first.
+
+### `self` — CodexSSD's own footprint
+
+```bash
+codexssd self          # how much disk CodexSSD itself is using, plus its history
+codexssd self --json   # the same report as JSON
+```
+
+CodexSSD keeps itself honest: `self` reports its own storage footprint (a
+plain JSONL history file, never a database) and a summary of its recorded
+actions, so you can see it isn't the problem.
+
+### `mcp` — read-only tools for AI agents (MCP over stdio)
+
+```bash
+codexssd mcp   # serve five read-only tools over stdio (MCP)
+```
+
+See the [MCP](#mcp) section below for what this exposes and how to wire it up.
+
+### Bare `codexssd` — the interactive dashboard
+
+```bash
+codexssd   # opens an interactive terminal dashboard
+```
+
+Running `codexssd` with no command at all launches a small interactive
+terminal app: a live view of Codex's log sizes with guided (confirm-first)
+`clean` and `restore` actions. It adds no file-mutating logic of its own — it's
+a thin layer over the same safety-tested engine used by the CLI commands
+above.
+
+## Configuration
+
+CodexSSD reads an optional config file at `~/.codexssd/config.json`. Every key
+is optional — anything you omit keeps its default. **A missing or broken
+config never stops the tool — it warns and uses defaults.**
+
+Full example showing every key and its default:
+
+```json
+{
+  "medium_mb_per_min": 25,
+  "high_mb_per_min": 100,
+  "critical_mb_per_min": 500,
+  "high_wal_size_mb": 1024,
+  "critical_wal_size_mb": 8192,
+  "high_mem_mb": 2048,
+  "critical_mem_mb": 6144,
+  "poll_interval_seconds": 30,
+  "bin_hold_days": 14,
+  "notifications": true,
+  "stale_after_days": 30
+}
+```
+
+- `medium_mb_per_min` / `high_mb_per_min` / `critical_mb_per_min` — log write
+  rate thresholds (MB/min) that raise `watch`'s risk level.
+- `high_wal_size_mb` / `critical_wal_size_mb` — WAL file size thresholds.
+- `high_mem_mb` / `critical_mem_mb` — Codex process memory thresholds.
+- `poll_interval_seconds` — how often `watch` re-checks `~/.codex` (clamped to
+  a minimum of 5 seconds).
+- `bin_hold_days` — how long `clean --yes` backups are held before `prune` can
+  release them (clamped to a minimum of 1 day).
+- `notifications` — whether `watch` may fire desktop notifications.
+- `stale_after_days` — how old an entry must be before `report` flags it as
+  stale.
+
+## MCP
+
+CodexSSD can serve its read-only tools to AI agents over stdio using the
+[Model Context Protocol](https://modelcontextprotocol.io). The design goal is
+simple: **an agent can see everything and touch nothing.** There is no
+mutating tool, and there never will be — `mcp` exposes exactly five read-only
+tools:
+
+- `codex_status` — sizes of Codex's own log files
+- `clean_plan` — the dry-run plan of what `clean` *would* move aside (this
+  server can never execute it)
+- `list_backups` — recoverable recycling-bin backups
+- `self_report` — CodexSSD's own footprint and action history
+- `disk_report` — what's using disk inside `~/.codex`, with stale flags
+
+Setup with Claude Code:
+
+```bash
+claude mcp add codexssd -- codexssd mcp
+```
+
+## Roadmap status
+
+Phase 1 (the safe core: watch, warn, tidy Codex's own logs) is **complete**.
+Phase 2 (recycling-bin lifecycle + disk visibility) is **complete**, except
+for the deliberately deferred items noted in the spec (deep relationship
+mapping, behavioural detection, and support for other AI tools remain out of
+scope for now). See [`docs/roadmap.md`](docs/roadmap.md) for the full phase
+plan and [`docs/scope.md`](docs/scope.md) for the in/out line in the sand.
 
 ## Documentation
 
@@ -169,12 +304,18 @@ The full design spec lives in [`docs/`](docs/):
 ## Repository layout
 
 ```
-cmd/codexssd/        CLI entry point
-internal/codex/      Codex paths, known log files, size reporting (used now)
-internal/monitor/    watcher + risk engine (stub)
-internal/cleaner/    move-aside recycling-bin tidier (stub)
-internal/agent/      AGENTS.md "please behave" installer (stub)
-internal/recorder/   JSONL session history, no database (stub)
-internal/self/       CodexSSD's own-footprint self-report (stub)
-docs/                the full design spec
+cmd/codexssd/         CLI entry point + command dispatch
+internal/codex/       Codex paths, known log files, size reporting
+internal/monitor/     watcher + risk engine
+internal/cleaner/     move-aside recycling-bin tidier
+internal/agent/       AGENTS.md "please behave" installer
+internal/recorder/    JSONL session history, no database
+internal/self/        CodexSSD's own-footprint self-report
+internal/config/      ~/.codexssd/config.json loader (never bricks the tool)
+internal/visibility/  `report`'s ~/.codex disk-usage scan
+internal/notify/      best-effort desktop notifications for `watch`
+internal/mcpserver/   read-only MCP server (stdio) for `mcp`
+internal/tui/         interactive dashboard (bare `codexssd`)
+internal/trash/       OS Trash integration for `prune`
+docs/                 the full design spec
 ```
