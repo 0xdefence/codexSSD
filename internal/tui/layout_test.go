@@ -51,3 +51,35 @@ func TestStatusBarPutsKeysLeftStatusRight(t *testing.T) {
 		t.Errorf("status should appear, got %q", out)
 	}
 }
+
+func TestPanelTruncatesWideBody(t *testing.T) {
+	// A body line wider than the inner width must be truncated, not overflow.
+	out := panel("Codex folder", "/a/very/long/path/that/definitely/exceeds/the/inner/width/aaaaaa", 30)
+	for _, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(line); w != 30 {
+			t.Errorf("panel line width = %d, want 30: %q", w, line)
+		}
+	}
+}
+
+func TestPanelTruncatesLongTitle(t *testing.T) {
+	// A title wider than the inner width must not push the top border past width.
+	out := panel("a really long panel title that overflows the box", "body", 20)
+	top := strings.SplitN(out, "\n", 2)[0]
+	if w := lipgloss.Width(top); w != 20 {
+		t.Errorf("panel top line width = %d, want 20: %q", w, top)
+	}
+}
+
+func TestStatusBarStaysOneLine(t *testing.T) {
+	// Overflowing content must be truncated so the bar stays exactly one line
+	// at the given width — otherwise Render word-wraps and misaligns the fixed
+	// last row of later screens.
+	out := statusBar("a very long set of key hints that overflows", "watching status that is also long", 30)
+	if lipgloss.Width(out) != 30 {
+		t.Errorf("status bar width = %d, want 30", lipgloss.Width(out))
+	}
+	if n := strings.Count(out, "\n"); n != 0 {
+		t.Errorf("status bar must be one line, got %d newlines: %q", n, out)
+	}
+}
