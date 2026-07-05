@@ -50,6 +50,7 @@ type Model struct {
 	state    state
 	showHelp bool
 	width    int
+	height   int
 	cfg      config.Config
 
 	// status (populated by loadCmd in Task 2)
