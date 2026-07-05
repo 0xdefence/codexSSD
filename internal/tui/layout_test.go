@@ -71,6 +71,25 @@ func TestPanelTruncatesLongTitle(t *testing.T) {
 	}
 }
 
+func TestTruncateCellsAddsEllipsis(t *testing.T) {
+	// A body line much wider than the panel inner width must be truncated with
+	// a visible ellipsis cue, while every rendered line stays exactly the
+	// outer width (the truncation must still respect the width contract).
+	out := panel("Codex folder", "/a/very/long/path/that/definitely/exceeds/the/inner/width/aaaaaa", 30)
+	found := false
+	for _, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(line); w != 30 {
+			t.Errorf("panel line width = %d, want 30: %q", w, line)
+		}
+		if strings.Contains(line, "…") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected truncated line to contain an ellipsis, got:\n%s", out)
+	}
+}
+
 func TestStatusBarStaysOneLine(t *testing.T) {
 	// Overflowing content must be truncated so the bar stays exactly one line
 	// at the given width — otherwise Render word-wraps and misaligns the fixed

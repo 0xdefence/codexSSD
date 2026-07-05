@@ -192,7 +192,6 @@ func (m Model) renderConfirmRestore() string {
 }
 
 func (m Model) renderRestoreList() string {
-	w := effectiveWidth(m)
 	var body strings.Builder
 	for i, bk := range m.backups {
 		var total int64
@@ -208,11 +207,7 @@ func (m Model) renderRestoreList() string {
 		}
 		body.WriteString(row)
 	}
-	return strings.Join([]string{
-		renderCompactLogo(w), "",
-		panel("Restore a backup", body.String(), w), "",
-		statusBar("↑/↓ choose · enter select · esc back", "watching ~/.codex", w),
-	}, "\n")
+	return m.screen("Restore a backup", body.String(), "↑/↓ choose · enter select · esc back")
 }
 
 func (m Model) renderHelp() string {

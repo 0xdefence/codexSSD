@@ -16,7 +16,7 @@ func truncateCells(s string, max int) string {
 	if max <= 0 {
 		return ""
 	}
-	return ansi.Truncate(s, max, "")
+	return ansi.Truncate(s, max, "…")
 }
 
 // effectiveWidth resolves the width to render at. Before the first WindowSizeMsg
@@ -53,7 +53,7 @@ func panel(title, body string, width int) string {
 		dashes = 0
 	}
 	top := panelBorderStyle.Render(b.TopLeft) + label + panelBorderStyle.Render(strings.Repeat(b.Top, dashes)) + panelBorderStyle.Render(b.TopRight)
-	bottom := panelBorderStyle.Render(b.BottomLeft + strings.Repeat(b.Top, inner) + b.BottomRight)
+	bottom := panelBorderStyle.Render(b.BottomLeft + strings.Repeat(b.Bottom, inner) + b.BottomRight)
 
 	left := panelBorderStyle.Render(b.Left)
 	right := panelBorderStyle.Render(b.Right)
