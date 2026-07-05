@@ -10,8 +10,6 @@ import (
 	"github.com/0xdefence/codexssd/internal/monitor"
 )
 
-var titleStyle = lipgloss.NewStyle().Bold(true)
-
 // banner classifies what the dashboard's deadweight line should say.
 type banner int
 
@@ -152,85 +150,77 @@ func (m Model) footer() string {
 	return "c tidy · r restore · ? help · q quit"
 }
 
-func (m Model) renderHelp() string {
-	var b strings.Builder
-	fmt.Fprintln(&b, titleStyle.Render("CodexSSD — help"))
-	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "c    tidy Codex's logs aside (recoverable)")
-	fmt.Fprintln(&b, "r    restore previously tidied logs")
-	fmt.Fprintln(&b, "?    toggle this help")
-	fmt.Fprintln(&b, "q    quit")
-	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "press ? or esc to close")
-	return b.String()
+// screen frames a secondary view: compact logo header, an accent-titled card,
+// and the shared status bar. keys is the status bar's left content.
+func (m Model) screen(title, body, keys string) string {
+	w := effectiveWidth(m)
+	return strings.Join([]string{
+		renderCompactLogo(w),
+		"",
+		panel(title, body, w),
+		"",
+		statusBar(keys, "watching ~/.codex", w),
+	}, "\n")
 }
 
 func (m Model) renderConfirmClean() string {
-	var b strings.Builder
-	fmt.Fprintln(&b, titleStyle.Render("Tidy Codex logs"))
-	fmt.Fprintln(&b)
-	fmt.Fprintf(&b, "Move %s of Codex's own logs into a recoverable bin?\n", codex.HumanBytes(m.report.TotalBytes))
-	fmt.Fprintln(&b, "Nothing is deleted — you can restore them any time.")
-	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "y yes · n no")
-	return b.String()
+	body := fmt.Sprintf("Move %s of Codex's own logs into a recoverable bin?\nNothing is deleted — you can restore them any time.",
+		codex.HumanBytes(m.report.TotalBytes))
+	return m.screen("Tidy Codex logs", body, "y yes · n no")
 }
 
 func (m Model) renderWorking(label string) string {
-	return titleStyle.Render("CodexSSD") + "\n\n" + label + "\n"
+	return m.screen("CodexSSD", label, "please wait…")
 }
 
 func (m Model) renderResult() string {
-	var b strings.Builder
-	fmt.Fprintln(&b, titleStyle.Render("CodexSSD"))
-	fmt.Fprintln(&b)
+	body := m.resultMsg
 	if m.resultErr != nil {
-		fmt.Fprintf(&b, "Something went wrong: %v\n", m.resultErr)
-	} else {
-		fmt.Fprintln(&b, m.resultMsg)
+		body = fmt.Sprintf("Something went wrong: %v", m.resultErr)
 	}
-	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "enter return to dashboard")
-	return b.String()
+	return m.screen("CodexSSD", body, "enter return to dashboard")
+}
+
+func (m Model) renderBlocked() string {
+	return m.screen("Can't do that right now", m.blockedReason, "enter return to dashboard")
+}
+
+func (m Model) renderConfirmRestore() string {
+	id := filepathBase(m.backups[m.selected].Dir)
+	body := fmt.Sprintf("Move the logs in backup %s back to your Codex folder?", id)
+	return m.screen("Restore backup", body, "y yes · n no")
 }
 
 func (m Model) renderRestoreList() string {
-	var b strings.Builder
-	fmt.Fprintln(&b, titleStyle.Render("Restore a backup"))
-	fmt.Fprintln(&b)
+	w := effectiveWidth(m)
+	var body strings.Builder
 	for i, bk := range m.backups {
-		cursor := "  "
-		if i == m.selected {
-			cursor = "> "
-		}
 		var total int64
 		for _, it := range bk.Manifest.Items {
 			total += it.Size
 		}
-		fmt.Fprintf(&b, "%s%-18s %10s   releases %s\n", cursor, filepathBase(bk.Dir), codex.HumanBytes(total), bk.Manifest.HoldUntil.Format("2006-01-02"))
+		row := fmt.Sprintf("%-18s %10s   releases %s", filepathBase(bk.Dir), codex.HumanBytes(total), bk.Manifest.HoldUntil.Format("2006-01-02"))
+		if i == m.selected {
+			row = selectedRowStyle.Render(row)
+		}
+		if i > 0 {
+			body.WriteString("\n")
+		}
+		body.WriteString(row)
 	}
-	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "↑/↓ choose · enter select · esc back")
-	return b.String()
+	return strings.Join([]string{
+		renderCompactLogo(w), "",
+		panel("Restore a backup", body.String(), w), "",
+		statusBar("↑/↓ choose · enter select · esc back", "watching ~/.codex", w),
+	}, "\n")
 }
 
-func (m Model) renderConfirmRestore() string {
-	var b strings.Builder
-	id := filepathBase(m.backups[m.selected].Dir)
-	fmt.Fprintln(&b, titleStyle.Render("Restore backup"))
-	fmt.Fprintln(&b)
-	fmt.Fprintf(&b, "Move the logs in backup %s back to your Codex folder?\n", id)
-	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "y yes · n no")
-	return b.String()
-}
-
-func (m Model) renderBlocked() string {
-	var b strings.Builder
-	fmt.Fprintln(&b, titleStyle.Render("Can't do that right now"))
-	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, m.blockedReason)
-	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "enter return to dashboard")
-	return b.String()
+func (m Model) renderHelp() string {
+	body := strings.Join([]string{
+		"c    tidy Codex's logs aside (recoverable)",
+		"r    restore previously tidied logs",
+		"?    toggle this help",
+		"q    quit",
+	}, "\n")
+	return m.screen("CodexSSD — help", body, "? or esc to close")
 }

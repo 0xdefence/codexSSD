@@ -56,3 +56,48 @@ func TestDashboardShowsRiskPanel(t *testing.T) {
 		t.Errorf("dashboard should show the LOW risk label; got:\n%s", out)
 	}
 }
+
+func TestConfirmCleanScreenStyled(t *testing.T) {
+	m := dashboardAfterLoad(t)
+	m.width = 90
+	m.state = stateConfirmClean
+	out := m.View()
+	if !strings.Contains(out, "codexSSD") { // compact logo header
+		t.Errorf("confirm screen should show the logo header; got:\n%s", out)
+	}
+	if !strings.Contains(out, "y yes") || !strings.Contains(out, "n no") {
+		t.Errorf("confirm screen should show its keys; got:\n%s", out)
+	}
+}
+
+func TestRestoreListHighlightsSelection(t *testing.T) {
+	m, _ := step(New(config.Default()), loadedWithBackup())
+	m.width = 90
+	m.state = stateRestoreList
+	m.selected = 0
+	out := m.View()
+	// The selected backup id should appear; no reliance on the old "> " prefix.
+	if !strings.Contains(out, filepathBase(m.backups[0].Dir)) {
+		t.Errorf("restore list should show the backup id; got:\n%s", out)
+	}
+	if !strings.Contains(out, "choose") {
+		t.Errorf("restore list should show its keys; got:\n%s", out)
+	}
+}
+
+func TestResultAndBlockedScreensStyled(t *testing.T) {
+	m := dashboardAfterLoad(t)
+	m.width = 90
+
+	m.state = stateResult
+	m.resultMsg = "Tidied 9.5 GiB of Codex logs aside."
+	if out := m.View(); !strings.Contains(out, "Tidied 9.5 GiB") {
+		t.Errorf("result screen missing its message; got:\n%s", out)
+	}
+
+	m.state = stateBlocked
+	m.blockedReason = "Codex appears to be running."
+	if out := m.View(); !strings.Contains(out, "Codex appears to be running.") {
+		t.Errorf("blocked screen missing its reason; got:\n%s", out)
+	}
+}
