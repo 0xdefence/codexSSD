@@ -59,78 +59,93 @@ func (m Model) View() string {
 }
 
 func (m Model) renderDashboard() string {
-	var b strings.Builder
-	fmt.Fprintln(&b, titleStyle.Render("CodexSSD"))
-	fmt.Fprintln(&b)
+	w := effectiveWidth(m)
+	var sections []string
+	sections = append(sections, renderLogo(w), "")
 
 	if m.loadErr != nil {
-		fmt.Fprintf(&b, "Could not read Codex's folder: %v\n\n", m.loadErr)
-		fmt.Fprintln(&b, m.footer())
-		return b.String()
+		sections = append(sections,
+			panel("Codex folder", fmt.Sprintf("Could not read Codex's folder: %v", m.loadErr), w),
+			"",
+			statusBar(m.footer(), "watching ~/.codex", w),
+		)
+		return strings.Join(sections, "\n")
 	}
 
-	fmt.Fprintf(&b, "Codex folder: %s\n", m.report.CodexDir)
+	// Left panel: the Codex folder + log sizes.
+	var logs strings.Builder
+	fmt.Fprintf(&logs, "%s\n", m.report.CodexDir)
 	if !m.report.DirExists {
-		fmt.Fprintln(&b, "  (not found — Codex may not have run yet)")
-		fmt.Fprintln(&b)
-		fmt.Fprintln(&b, m.footer())
-		return b.String()
-	}
-
-	fmt.Fprintln(&b, "Codex logs:")
-	for _, f := range m.report.Files {
-		if f.Exists {
-			fmt.Fprintf(&b, "  %-20s %10s\n", f.Name, codex.HumanBytes(f.Size))
+		fmt.Fprint(&logs, "(not found — Codex may not have run yet)")
+	} else {
+		for _, f := range m.report.Files {
+			if f.Exists {
+				fmt.Fprintf(&logs, "%-20s %10s\n", f.Name, codex.HumanBytes(f.Size))
+			}
 		}
+		fmt.Fprintf(&logs, "%-20s %10s", "Total", codex.HumanBytes(m.report.TotalBytes))
 	}
-	fmt.Fprintf(&b, "  %-20s %10s\n\n", "Total", codex.HumanBytes(m.report.TotalBytes))
 
-	if m.assessment.Level >= monitor.RiskMedium {
+	// Right panel: risk + process + memory.
+	var risk strings.Builder
+	lvl := m.assessment.Level
+	fmt.Fprintf(&risk, "%s %s\n", riskStyle(lvl).Render(riskGlyph(lvl)), riskStyle(lvl).Render(lvl.String()))
+	if lvl >= monitor.RiskMedium {
 		reason := ""
 		if len(m.assessment.Reasons) > 0 {
-			reason = " — " + m.assessment.Reasons[0]
+			reason = " · " + m.assessment.Reasons[0]
 		}
-		fmt.Fprintf(&b, "Risk: %s · %.0f MB/min · WAL %s%s\n",
-			m.assessment.Level, m.assessment.RateMBPerMin, codex.HumanBytes(m.assessment.WALBytes), reason)
+		fmt.Fprintf(&risk, "%.0f MB/min · WAL %s%s\n", m.assessment.RateMBPerMin, codex.HumanBytes(m.assessment.WALBytes), reason)
 	}
-
-	switch m.bannerState() {
-	case bannerActionable:
-		fmt.Fprintf(&b, "⚠  %s of Codex logs piled up — press c to tidy.\n", codex.HumanBytes(m.report.TotalBytes))
-	case bannerInformational:
-		fmt.Fprintf(&b, "⚠  %s piling up — I'll offer to tidy when Codex is closed.\n", codex.HumanBytes(m.report.TotalBytes))
-	default:
-		fmt.Fprintln(&b, "Nothing alarming right now.")
-	}
-
 	switch {
 	case !m.supported:
-		fmt.Fprintln(&b, "(This platform can't check whether Codex is running.)")
+		fmt.Fprint(&risk, "Codex: can't check")
 	case m.running:
-		fmt.Fprintln(&b, "Codex appears to be running.")
+		fmt.Fprint(&risk, "Codex: running")
 	default:
-		fmt.Fprintln(&b, "Codex doesn't appear to be running.")
+		fmt.Fprint(&risk, "Codex: not running")
 	}
 	if m.running && m.memBytes > 0 {
-		fmt.Fprintf(&b, "Codex memory:  %s\n", codex.HumanBytes(m.memBytes))
+		fmt.Fprintf(&risk, "\nmemory: %s", codex.HumanBytes(m.memBytes))
 	}
 
-	if t, ok := m.lastTidy(); ok {
-		fmt.Fprintf(&b, "Recycling bin: %d backup(s) (last tidy %s)\n", len(m.backups), t.Format("2006-01-02 15:04"))
-		if s, ok := m.soonestRelease(); ok {
-			fmt.Fprintf(&b, "  next release: %s\n", s.Format("2006-01-02"))
-		}
+	// Compose the two panels: side by side when wide, stacked when narrow.
+	const twoColMin = 72
+	if w >= twoColMin {
+		leftW := (w - 2) / 2
+		rightW := w - 2 - leftW
+		row := lipgloss.JoinHorizontal(lipgloss.Top,
+			panel("Codex folder", logs.String(), leftW), "  ", panel("Risk", risk.String(), rightW))
+		sections = append(sections, row)
 	} else {
-		fmt.Fprintln(&b, "Recycling bin: empty")
+		sections = append(sections, panel("Codex folder", logs.String(), w), panel("Risk", risk.String(), w))
+	}
+
+	// Recycling bin (full width).
+	bin := "empty"
+	if t, ok := m.lastTidy(); ok {
+		bin = fmt.Sprintf("%d backup(s) · last tidy %s", len(m.backups), t.Format("2006-01-02 15:04"))
+		if s, ok := m.soonestRelease(); ok {
+			bin += fmt.Sprintf(" · next release %s", s.Format("2006-01-02"))
+		}
+	}
+	sections = append(sections, panel("Recycling bin", bin, w))
+
+	// Banner line (unchanged logic).
+	switch m.bannerState() {
+	case bannerActionable:
+		sections = append(sections, headerStyle.Render(fmt.Sprintf("⚠  %s of Codex logs piled up — press c to tidy.", codex.HumanBytes(m.report.TotalBytes))))
+	case bannerInformational:
+		sections = append(sections, mutedTextStyle.Render(fmt.Sprintf("⚠  %s piling up — I'll offer to tidy when Codex is closed.", codex.HumanBytes(m.report.TotalBytes))))
+	default:
+		sections = append(sections, mutedTextStyle.Render("Nothing alarming right now."))
 	}
 	if m.releaseNote != "" {
-		fmt.Fprintln(&b, m.releaseNote)
+		sections = append(sections, mutedTextStyle.Render(m.releaseNote))
 	}
 
-	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "watching ~/.codex · updates every 30s")
-	fmt.Fprintln(&b, m.footer())
-	return b.String()
+	sections = append(sections, "", statusBar(m.footer(), "watching ~/.codex · updates every 30s", w))
+	return strings.Join(sections, "\n")
 }
 
 func (m Model) footer() string {

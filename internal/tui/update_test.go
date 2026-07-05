@@ -435,8 +435,8 @@ func TestHighRiskDrivesActionableBanner(t *testing.T) {
 		t.Fatalf("assessment level = %v, want RiskCritical", m.assessment.Level)
 	}
 	view := m.View()
-	if !strings.Contains(view, "Risk:") {
-		t.Errorf("dashboard should show a Risk line:\n%s", view)
+	if !strings.Contains(view, "CRITICAL") {
+		t.Errorf("dashboard should show the CRITICAL risk level:\n%s", view)
 	}
 	if m.bannerState() != bannerActionable {
 		t.Errorf("high risk + idle should be actionable, got %v", m.bannerState())
