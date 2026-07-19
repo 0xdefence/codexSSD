@@ -67,6 +67,9 @@ not missing it has proven it was junk.
 
 ## Phase 3 — The Shallow Map (connection-awareness, carefully)
 
+> Status (2026-07): shipped — shallow probe for Claude Code project folders;
+> Codex entries remain unprobed (report-only) for now.
+
 **Goal:** Make the tool's judgment sharper by being aware of what's connected to
 what — but only to make it *more* cautious.
 
@@ -85,6 +88,11 @@ not.** The map is a better flashlight, never a license to act.
 ---
 
 ## Phase 4 — The Deep Map & Broader Support (graduating into cleverness)
+
+> Status (2026-07): partially shipped — tool profiles with Claude Code support
+> (status/report/clean/restore/prune) and behavioral detection. Deep map,
+> Cursor/Gemini, cost/token awareness, summaries, and extra interfaces remain
+> future work.
 
 **Goal:** Once trust is banked and we have real-world evidence, deepen the map
 and broaden beyond Codex.
@@ -107,7 +115,7 @@ trust we've already earned — not bet on with fingers crossed on day one.
 ## What we're deliberately NOT doing early
 
 - Letting the tool delete things on its own (it only ever *moves aside*, and only
-  for Codex's own logs)
+  for a tool's own known files)
 - Letting the tool make confident judgments about your real work
 - Acting on anything it's uncertain about — when in doubt, it reports, never
   resolves

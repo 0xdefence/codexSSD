@@ -18,12 +18,15 @@ import (
 	"time"
 
 	"github.com/0xdefence/codexssd/internal/agent"
+	"github.com/0xdefence/codexssd/internal/behavior"
 	"github.com/0xdefence/codexssd/internal/cleaner"
 	"github.com/0xdefence/codexssd/internal/codex"
 	"github.com/0xdefence/codexssd/internal/config"
 	"github.com/0xdefence/codexssd/internal/mcpserver"
 	"github.com/0xdefence/codexssd/internal/recorder"
 	"github.com/0xdefence/codexssd/internal/self"
+	"github.com/0xdefence/codexssd/internal/shallowmap"
+	"github.com/0xdefence/codexssd/internal/tool"
 	"github.com/0xdefence/codexssd/internal/tui"
 	"github.com/0xdefence/codexssd/internal/visibility"
 )
@@ -44,6 +47,8 @@ Commands:
   self           Report CodexSSD's own footprint
   mcp            Serve read-only CodexSSD tools to AI agents over stdio (MCP)
   help           Show this help
+
+Most commands accept --tool codex|claude (default codex).
 
 Run "codexssd <command> -h" for command-specific flags.
 `
@@ -96,41 +101,125 @@ func run(args []string) int {
 
 // cmdStatus implements `codexssd status`.
 //
-// SAFETY: this command is 100% READ-ONLY. It only locates ~/.codex and calls
-// os.Stat on Codex's known log files. It moves nothing, deletes nothing, and
-// writes nothing to disk.
+// SAFETY: this command is 100% READ-ONLY. It only locates the resolved
+// tool's own data directory (~/.codex for codex, ~/.claude for Claude Code,
+// etc.) and calls os.Stat on that profile's own known files. It moves
+// nothing, deletes nothing, and writes nothing to disk.
 func cmdStatus(args []string) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "output the report as JSON")
+	toolName := fs.String("tool", "codex", "which AI tool to inspect (codex, claude)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: codexssd status [--json]\n\n")
-		fmt.Fprintf(os.Stderr, "Report the size of Codex's own log files (read-only).\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: codexssd status [--json] [--tool codex|claude]\n\n")
+		fmt.Fprintf(os.Stderr, "Report the size of a tool's own log/session files (read-only).\n\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
-	dir, err := codex.Dir()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "codexssd: could not determine your home directory: %v\n", err)
-		return 1
+	p, dir, code := resolveTool(*toolName)
+	if code != 0 {
+		return code
 	}
 
-	report := codex.ScanLogs(dir)
-
-	if *jsonOut {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(report); err != nil {
-			fmt.Fprintf(os.Stderr, "codexssd: failed to encode JSON: %v\n", err)
-			return 1
+	if p.Name == "codex" {
+		// Unchanged Phase-1 path: fixed-file report via codex.ScanLogs(dir).
+		report := codex.ScanLogs(dir)
+		if *jsonOut {
+			return emitJSON(report)
 		}
+		printStatus(report)
 		return 0
 	}
 
-	printStatus(report)
+	// Glob-profile tools (Claude Code and beyond): status summarizes only what
+	// is currently cleanable (stale own files). Fresh own files are left out
+	// deliberately — they may still be in active use — so this never nudges
+	// the user to look at something clean isn't about to touch anyway.
+	cfg := loadConfig()
+	cleanable := p.CleanablePaths(dir, time.Now(), cfg.StaleAfter())
+	if *jsonOut {
+		return emitJSON(newToolStatusReport(p, dir, cleanable))
+	}
+	printToolStatus(os.Stdout, p, dir, cleanable)
 	return 0
+}
+
+// resolveTool maps a --tool value to its profile and data dir. Exit-code
+// semantics match the rest of main: 2 = bad usage, 1 = environment problem.
+func resolveTool(name string) (tool.Profile, string, int) {
+	p, err := tool.ByName(name)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codexssd: %v\n", err)
+		return tool.Profile{}, "", 2
+	}
+	dir, err := p.Dir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codexssd: could not determine your home directory: %v\n", err)
+		return tool.Profile{}, "", 1
+	}
+	return p, dir, 0
+}
+
+// toolStatusFile is one cleanable (stale) file in a glob-profile tool's status
+// JSON output.
+type toolStatusFile struct {
+	Name string `json:"name"`
+	Size int64  `json:"size_bytes"`
+}
+
+// toolStatusReport is the --json shape for glob-profile tools' `status`:
+// only currently-cleanable (stale) own files are listed — see cmdStatus.
+type toolStatusReport struct {
+	Tool        string           `json:"tool"`
+	DisplayName string           `json:"display_name"`
+	Dir         string           `json:"dir"`
+	Cleanable   []toolStatusFile `json:"cleanable"`
+	TotalBytes  int64            `json:"cleanable_bytes"`
+}
+
+func newToolStatusReport(p tool.Profile, dir string, cleanable []tool.FoundFile) toolStatusReport {
+	r := toolStatusReport{
+		Tool:        p.Name,
+		DisplayName: p.DisplayName,
+		Dir:         dir,
+		Cleanable:   make([]toolStatusFile, 0, len(cleanable)),
+	}
+	for _, f := range cleanable {
+		r.Cleanable = append(r.Cleanable, toolStatusFile{Name: f.Rel, Size: f.Size})
+		r.TotalBytes += f.Size
+	}
+	return r
+}
+
+// printToolStatus renders a friendly, plain-language status for a glob-profile
+// tool: what's currently cleanable, plus a note that fresh own files are
+// deliberately left off this list because they may still be in use.
+func printToolStatus(w io.Writer, p tool.Profile, dir string, cleanable []tool.FoundFile) {
+	fmt.Fprintf(w, "%s directory: %s\n\n", p.DisplayName, dir)
+
+	if len(cleanable) == 0 {
+		fmt.Fprintf(w, "Nothing stale to report right now — no cleanable %s files were found.\n\n", p.DisplayName)
+	} else {
+		fmt.Fprintf(w, "%s files CodexSSD could safely clean up (stale, no longer fresh):\n", p.DisplayName)
+		width := 20
+		for _, f := range cleanable {
+			if len(f.Rel) > width {
+				width = len(f.Rel)
+			}
+		}
+		var total int64
+		for _, f := range cleanable {
+			fmt.Fprintf(w, "  %-*s %10s\n", width, f.Rel, codex.HumanBytes(f.Size))
+			total += f.Size
+		}
+		fmt.Fprintf(w, "  %-*s %10s\n\n", width, "Total", codex.HumanBytes(total))
+	}
+
+	fmt.Fprintf(w, "Fresh %s session files aren't listed here on purpose: they're still in\n", p.DisplayName)
+	fmt.Fprintln(w, `use (for example, they power "claude --resume"). Run "codexssd clean --tool`)
+	fmt.Fprintln(w, `claude" to review and move aside anything that's gone stale.`)
 }
 
 // loadConfig returns the user config, warning (not failing) on a malformed
@@ -143,11 +232,27 @@ func loadConfig() config.Config {
 	return cfg
 }
 
-// isCodexRunning is the process-check used by the file-mutating commands. It is
-// a package variable so tests can substitute a deterministic stub, making the
-// safety gate (refuse while Codex is running) verifiable on any machine without
-// a real Codex process or dependence on the host's process table.
+// isCodexRunning is the process-check used by the file-mutating commands for
+// the default (codex) --tool path. It is a package variable so tests can
+// substitute a deterministic stub, making the safety gate (refuse while Codex
+// is running) verifiable on any machine without a real Codex process or
+// dependence on the host's process table.
 var isCodexRunning = codex.IsCodexRunning
+
+// isToolRunning is the general per-profile process-check seam, used for tools
+// other than the default. It exists separately from isCodexRunning (rather
+// than replacing it) so existing tests that stub isCodexRunning directly keep
+// working unmodified.
+var isToolRunning = tool.IsRunning
+
+// toolRunning routes the running-check by tool: codex keeps using its
+// existing seam (isCodexRunning); other tools go through isToolRunning.
+func toolRunning(p tool.Profile) (bool, error) {
+	if p.Name == "codex" {
+		return isCodexRunning()
+	}
+	return isToolRunning(p)
+}
 
 // appendReceipt records a session receipt. A failed receipt is a note, never
 // an error — bookkeeping must not fail the user's action.
@@ -161,16 +266,18 @@ func recordReceipt(r recorder.Receipt) {
 
 // cmdClean implements `codexssd clean`.
 //
-// Default is a read-only dry run. `--yes` moves Codex's own logs aside into the
-// recycling bin, but only after confirming Codex is not running. Nothing is ever
-// deleted.
+// Default is a read-only dry run. `--yes` moves the resolved tool's own
+// files (only what that tool's Profile allow-list names) aside into the
+// recycling bin, but only after confirming that tool is not running.
+// Nothing is ever deleted.
 func cmdClean(args []string) int {
 	fs := flag.NewFlagSet("clean", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "actually move the logs aside (default is a dry run)")
 	jsonOut := fs.Bool("json", false, "output as JSON")
+	toolName := fs.String("tool", "codex", "which AI tool to clean up (codex, claude)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: codexssd clean [--yes] [--json]\n\n")
-		fmt.Fprintf(os.Stderr, "Move Codex's own log files aside into a recoverable recycling bin.\n")
+		fmt.Fprintf(os.Stderr, "Usage: codexssd clean [--yes] [--json] [--tool codex|claude]\n\n")
+		fmt.Fprintf(os.Stderr, "Move a tool's own log/session files aside into a recoverable recycling bin.\n")
 		fmt.Fprintf(os.Stderr, "Without --yes this only shows what would happen (read-only).\n\n")
 		fs.PrintDefaults()
 	}
@@ -178,26 +285,47 @@ func cmdClean(args []string) int {
 		return 2
 	}
 
-	dir, err := codex.Dir()
+	p, dir, code := resolveTool(*toolName)
+	if code != 0 {
+		return code
+	}
+
+	// getConfig loads config lazily and at most once. Codex's own files are
+	// all fixed and ignore the stale gate, so its plan never needs to consult
+	// config at all — a plain dry-run `codexssd clean` must never load (and
+	// so never warn about) a malformed ~/.codexssd/config.json, matching
+	// pre-multi-tool behavior exactly. Glob-profile tools (Claude Code) DO
+	// need StaleAfter() to build the plan, even on a dry run.
+	var cfg config.Config
+	cfgLoaded := false
+	getConfig := func() config.Config {
+		if !cfgLoaded {
+			cfg = loadConfig()
+			cfgLoaded = true
+		}
+		return cfg
+	}
+
+	var plan cleaner.Plan
+	var err error
+	if p.Name == "codex" {
+		plan, err = cleaner.PlanTool(p, dir, time.Time{}, 0) // mirrors old PlanCodexLogs exactly
+	} else {
+		plan, err = cleaner.PlanTool(p, dir, time.Now(), getConfig().StaleAfter())
+	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "codexssd: could not determine your home directory: %v\n", err)
+		fmt.Fprintf(os.Stderr, "codexssd: could not inspect %s's files: %v\n", p.DisplayName, err)
 		return 1
 	}
 
-	plan, err := cleaner.PlanCodexLogs(dir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "codexssd: could not inspect Codex logs: %v\n", err)
-		return 1
-	}
-
-	running, runErr := isCodexRunning()
-	supported := runErr != codex.ErrUnsupportedPlatform
+	running, runErr := toolRunning(p)
+	supported := runErr != tool.ErrUnsupportedPlatform
 
 	if !*yes {
 		if *jsonOut {
 			out := map[string]any{
 				"plan":               plan,
-				"codex_running":      running,
+				"codex_running":      running, // key kept for compatibility; means "is <tool> running"
 				"platform_supported": supported,
 			}
 			if runErr != nil && supported {
@@ -205,65 +333,118 @@ func cmdClean(args []string) int {
 			}
 			return emitJSON(out)
 		}
-		renderPlan(os.Stdout, plan, running, supported)
+		renderPlan(os.Stdout, plan, running, supported, p.DisplayName)
 		return 0
 	}
 
-	// --yes: actually move aside. Refuse unless we can confirm Codex is stopped.
+	// --yes: actually move aside. Refuse unless we can confirm the tool is stopped.
 	if !supported {
-		fmt.Fprintln(os.Stderr, "codexssd: cannot verify Codex is closed on this platform; refusing to move files.")
+		fmt.Fprintf(os.Stderr, "codexssd: cannot verify %s is closed on this platform; refusing to move files.\n", p.DisplayName)
 		fmt.Fprintln(os.Stderr, "Run without --yes to see what would be moved.")
 		return 1
 	}
 	if runErr != nil {
-		fmt.Fprintf(os.Stderr, "codexssd: could not check whether Codex is running: %v\n", runErr)
+		fmt.Fprintf(os.Stderr, "codexssd: could not check whether %s is running: %v\n", p.DisplayName, runErr)
 		return 1
 	}
 	if running {
-		fmt.Fprintln(os.Stderr, "codexssd: Codex appears to be running. Close it first, then try again.")
+		fmt.Fprintf(os.Stderr, "codexssd: %s appears to be running. Close it first, then try again.\n", p.DisplayName)
 		return 1
 	}
 	if plan.Empty() {
-		fmt.Println("Nothing to move aside — no Codex log files are present.")
+		if p.Name == "codex" {
+			fmt.Println("Nothing to move aside — no Codex log files are present.")
+		} else {
+			fmt.Printf("Nothing stale to move aside — no cleanable %s files are present.\n", p.DisplayName)
+		}
 		return 0
 	}
 
-	cfg := loadConfig()
-	dest, err := plan.ApplyWithHold(time.Now(), cfg.BinHold())
+	dest, err := plan.ApplyWithHold(time.Now(), getConfig().BinHold())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "codexssd: clean failed: %v\n", err)
 		return 1
 	}
-	fmt.Printf("Moved %s of Codex logs aside to:\n  %s\n", codex.HumanBytes(plan.TotalBytes), dest)
+	if p.Name == "codex" {
+		fmt.Printf("Moved %s of Codex logs aside to:\n  %s\n", codex.HumanBytes(plan.TotalBytes), dest)
+	} else {
+		fmt.Printf("Moved %s of %s's stale files aside to:\n  %s\n", codex.HumanBytes(plan.TotalBytes), p.DisplayName, dest)
+	}
 	fmt.Println("Nothing was deleted. Restore them any time with \"codexssd restore\".")
-	recordReceipt(recorder.Receipt{At: time.Now(), Action: "clean", BytesMoved: plan.TotalBytes, FilesChanged: len(plan.Items), BackupID: filepath.Base(dest)})
+	recordReceipt(recorder.Receipt{At: time.Now(), Action: cleanAction(p), BytesMoved: plan.TotalBytes, FilesChanged: len(plan.Items), BackupID: filepath.Base(dest)})
 	return 0
 }
 
-// renderPlan prints a friendly, plain-language dry-run report.
-func renderPlan(w io.Writer, p cleaner.Plan, running bool, supported bool) {
+// cleanAction builds the receipt action string: "clean" for the default tool,
+// "clean --tool <name>" otherwise. The Receipt schema itself doesn't change —
+// only this action label grows a suffix — so `self`'s history report still
+// reads every receipt CodexSSD has ever written.
+func cleanAction(p tool.Profile) string {
+	if p.Name == "codex" {
+		return "clean"
+	}
+	return "clean --tool " + p.Name
+}
+
+// renderPlan prints a friendly, plain-language dry-run report. displayName is
+// variadic so existing (pre-multi-tool) call sites — including main_test.go,
+// which this task must leave unmodified — keep compiling unchanged; it
+// defaults to "Codex", which reproduces today's exact wording byte-for-byte.
+func renderPlan(w io.Writer, p cleaner.Plan, running bool, supported bool, displayName ...string) {
+	name := "Codex"
+	if len(displayName) > 0 && displayName[0] != "" {
+		name = displayName[0]
+	}
+	isCodex := name == "Codex"
+
 	if p.Empty() {
-		fmt.Fprintf(w, "Nothing to move aside — no Codex log files are present in %s.\n", p.CodexDir)
+		if isCodex {
+			fmt.Fprintf(w, "Nothing to move aside — no Codex log files are present in %s.\n", p.CodexDir)
+		} else {
+			fmt.Fprintf(w, "Nothing stale to move aside in %s — %s's fresh files are still in use and left alone.\n", p.CodexDir, name)
+		}
 		return
 	}
 
-	fmt.Fprintf(w, "CodexSSD found %s of Codex log files it can safely move aside:\n\n", codex.HumanBytes(p.TotalBytes))
+	// Item-name column: widened to fit the longest name so nested paths (e.g.
+	// Claude transcripts like "projects/-Users-jo-app/s1.jsonl") stay readable.
+	// Codex's short fixed names never exceed the original 20, so its column
+	// width — and therefore its output — is unchanged.
+	width := 20
 	for _, it := range p.Items {
-		fmt.Fprintf(w, "  %-20s %10s\n", it.Name, codex.HumanBytes(it.Size))
+		if len(it.Name) > width {
+			width = len(it.Name)
+		}
 	}
-	fmt.Fprintf(w, "  %-20s %10s\n\n", "Total", codex.HumanBytes(p.TotalBytes))
-	fmt.Fprintln(w, "These are Codex's own logs. Moving them frees the space; Codex makes")
-	fmt.Fprintln(w, "fresh ones next time it runs. Nothing is deleted — files go to a")
-	fmt.Fprintln(w, "recoverable bin and can be restored.")
+
+	if isCodex {
+		fmt.Fprintf(w, "CodexSSD found %s of Codex log files it can safely move aside:\n\n", codex.HumanBytes(p.TotalBytes))
+	} else {
+		fmt.Fprintf(w, "CodexSSD found %s of stale %s files it can safely move aside:\n\n", codex.HumanBytes(p.TotalBytes), name)
+	}
+	for _, it := range p.Items {
+		fmt.Fprintf(w, "  %-*s %10s\n", width, it.Name, codex.HumanBytes(it.Size))
+	}
+	fmt.Fprintf(w, "  %-*s %10s\n\n", width, "Total", codex.HumanBytes(p.TotalBytes))
+
+	if isCodex {
+		fmt.Fprintln(w, "These are Codex's own logs. Moving them frees the space; Codex makes")
+		fmt.Fprintln(w, "fresh ones next time it runs. Nothing is deleted — files go to a")
+		fmt.Fprintln(w, "recoverable bin and can be restored.")
+	} else {
+		fmt.Fprintf(w, "These are %s's own stale session files — old enough that they're not\n", name)
+		fmt.Fprintln(w, "expected to still be needed. Nothing is deleted — files go to a")
+		fmt.Fprintln(w, "recoverable bin and can be restored.")
+	}
 	fmt.Fprintln(w)
 
 	switch {
 	case !supported:
-		fmt.Fprintln(w, "Note: this platform can't check whether Codex is running, so --yes is disabled here.")
+		fmt.Fprintf(w, "Note: this platform can't check whether %s is running, so --yes is disabled here.\n", name)
 	case running:
-		fmt.Fprintln(w, "Codex appears to be running. Close it before cleaning.")
+		fmt.Fprintf(w, "%s appears to be running. Close it before cleaning.\n", name)
 	default:
-		fmt.Fprintln(w, "Codex doesn't appear to be running.")
+		fmt.Fprintf(w, "%s doesn't appear to be running.\n", name)
 		fmt.Fprintln(w, `Run "codexssd clean --yes" to move them aside.`)
 	}
 }
@@ -286,8 +467,9 @@ func emitJSON(v any) int {
 func cmdRestore(args []string) int {
 	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "output the backup list as JSON")
+	toolName := fs.String("tool", "codex", "which AI tool's backups to restore (codex, claude)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: codexssd restore [--json] [backup-id]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: codexssd restore [--json] [--tool codex|claude] [backup-id]\n\n")
 		fmt.Fprintf(os.Stderr, "With no id, lists recoverable backups. With an id, restores that backup.\n\n")
 		fs.PrintDefaults()
 	}
@@ -295,10 +477,9 @@ func cmdRestore(args []string) int {
 		return 2
 	}
 
-	dir, err := codex.Dir()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "codexssd: could not determine your home directory: %v\n", err)
-		return 1
+	p, dir, code := resolveTool(*toolName)
+	if code != 0 {
+		return code
 	}
 
 	backups, err := cleaner.ListBackups(dir)
@@ -316,18 +497,18 @@ func cmdRestore(args []string) int {
 		return 0
 	}
 
-	// Restoring overwrites the live log location, so refuse while Codex runs.
-	running, runErr := isCodexRunning()
-	if runErr == codex.ErrUnsupportedPlatform {
-		fmt.Fprintln(os.Stderr, "codexssd: cannot verify Codex is closed on this platform; refusing to restore.")
+	// Restoring overwrites the live log location, so refuse while the tool runs.
+	running, runErr := toolRunning(p)
+	if runErr == tool.ErrUnsupportedPlatform {
+		fmt.Fprintf(os.Stderr, "codexssd: cannot verify %s is closed on this platform; refusing to restore.\n", p.DisplayName)
 		return 1
 	}
 	if runErr != nil {
-		fmt.Fprintf(os.Stderr, "codexssd: could not check whether Codex is running: %v\n", runErr)
+		fmt.Fprintf(os.Stderr, "codexssd: could not check whether %s is running: %v\n", p.DisplayName, runErr)
 		return 1
 	}
 	if running {
-		fmt.Fprintln(os.Stderr, "codexssd: Codex appears to be running. Close it first, then try again.")
+		fmt.Fprintf(os.Stderr, "codexssd: %s appears to be running. Close it first, then try again.\n", p.DisplayName)
 		return 1
 	}
 
@@ -338,12 +519,12 @@ func cmdRestore(args []string) int {
 				fmt.Fprintf(os.Stderr, "codexssd: restore failed: %v\n", err)
 				return 1
 			}
-			recordReceipt(recorder.Receipt{At: time.Now(), Action: "restore", BackupID: id})
+			recordReceipt(recorder.Receipt{At: time.Now(), Action: restoreAction(p), BackupID: id})
 			if *jsonOut {
 				return emitJSON(map[string]any{
 					"status":    "restored",
 					"id":        id,
-					"codex_dir": dir,
+					"codex_dir": dir, // key kept for compatibility; holds the restored tool's dir
 				})
 			}
 			fmt.Printf("Restored backup %s to %s.\n", id, dir)
@@ -352,6 +533,15 @@ func cmdRestore(args []string) int {
 	}
 	fmt.Fprintf(os.Stderr, "codexssd: no backup with id %q. Run \"codexssd restore\" to list them.\n", id)
 	return 1
+}
+
+// restoreAction mirrors cleanAction: "restore" for the default tool,
+// "restore --tool <name>" otherwise. No Receipt schema change, just the label.
+func restoreAction(p tool.Profile) string {
+	if p.Name == "codex" {
+		return "restore"
+	}
+	return "restore --tool " + p.Name
 }
 
 // renderBackups prints the recoverable backups in plain language.
@@ -402,41 +592,158 @@ func printStatus(r codex.LogReport) {
 
 // cmdReport implements `codexssd report`.
 //
-// SAFETY: 100% read-only, and scoped to ~/.codex ONLY. It reports and points;
-// it never acts and never suggests CodexSSD act on anything beyond its own
-// known log files.
+// SAFETY: 100% read-only, and scoped to the resolved tool's own directory
+// ONLY (~/.codex for codex, ~/.claude for Claude Code, etc.). It reports and
+// points; it never acts and never suggests CodexSSD act on anything beyond
+// that tool's own known files.
 func cmdReport(args []string) int {
 	fs := flag.NewFlagSet("report", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "output the report as JSON")
+	toolName := fs.String("tool", "codex", "which AI tool to report on (codex, claude)")
+	connections := fs.Bool("connections", false, "probe whether anything obvious points at each entry (shallow map, read-only)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: codexssd report [--json]\n\n")
-		fmt.Fprintf(os.Stderr, "Show what's using disk inside ~/.codex (read-only).\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: codexssd report [--json] [--tool codex|claude] [--connections]\n\n")
+		fmt.Fprintf(os.Stderr, "Show what's using disk inside a tool's own directory (read-only).\n\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	dir, err := codex.Dir()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "codexssd: could not determine your home directory: %v\n", err)
-		return 1
+	p, dir, code := resolveTool(*toolName)
+	if code != 0 {
+		return code
 	}
 	cfg := loadConfig()
 	rep := visibility.Scan(dir, time.Now(), cfg.StaleAfter())
-	if *jsonOut {
-		return emitJSON(rep)
+
+	// --connections only has real coverage for Claude Code today (Codex has no
+	// shallow probe yet). It is entirely additive: without it, output — JSON
+	// included — is byte-identical to before this flag existed.
+	var claudeEntries []shallowmap.ProjectEntry
+	if *connections && p.Name == "claude" {
+		claudeEntries = shallowmap.ScanClaudeProjects(dir, time.Now(), cfg.StaleAfter())
 	}
-	renderVisibility(os.Stdout, rep)
+
+	// Provenance is loaded best-effort and scoped to the current tool: a
+	// damaged or missing history must never block `report`, and behavior
+	// noticed for one tool must never be attributed to another.
+	provEvents, provNames := loadProvenanceFor(p.Name)
+
+	if *jsonOut {
+		out := struct {
+			visibility.Report
+			Connections []shallowmap.ProjectEntry `json:"connections,omitempty"`
+			Provenance  []behavior.Event          `json:"provenance,omitempty"`
+		}{rep, claudeEntries, provEvents}
+		return emitJSON(out)
+	}
+
+	renderVisibility(os.Stdout, rep, reportRenderOpts{DisplayName: p.DisplayName, Provenance: provNames})
+	if *connections {
+		renderConnections(os.Stdout, p, claudeEntries)
+	}
 	return 0
 }
 
-// renderVisibility prints the disk report in plain language.
-func renderVisibility(w io.Writer, r visibility.Report) {
-	if !r.DirExists {
-		fmt.Fprintf(w, "No Codex directory found at %s — nothing is using disk here.\n", r.Dir)
+// loadProvenanceFor loads the recorded provenance history and filters it to
+// events for toolName, returning both the filtered events (for --json) and a
+// name-set for quick human-output annotation lookups. Any failure to resolve
+// the path or read the history is a warning, not an error — a damaged or
+// missing provenance file must never block `report`.
+func loadProvenanceFor(toolName string) ([]behavior.Event, map[string]bool) {
+	path, err := behavior.ProvenancePath()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codexssd: note: couldn't determine provenance path: %v\n", err)
+		return nil, nil
+	}
+	all, err := behavior.Load(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codexssd: note: couldn't read provenance history: %v\n", err)
+		return nil, nil
+	}
+	var events []behavior.Event
+	var names map[string]bool
+	for _, e := range all {
+		if e.Tool != toolName {
+			continue
+		}
+		events = append(events, e)
+		if names == nil {
+			names = make(map[string]bool)
+		}
+		names[e.Entry] = true
+	}
+	return events, names
+}
+
+// renderConnections prints the shallow connection map section for `report
+// --connections`. Coverage is honest about its own limits: Codex has no
+// shallow probe yet, and that gap is stated outright rather than silently
+// producing an empty section (no-silent-caps).
+func renderConnections(w io.Writer, p tool.Profile, entries []shallowmap.ProjectEntry) {
+	fmt.Fprintln(w)
+	if p.Name != "claude" {
+		fmt.Fprintln(w, "Connections: no shallow probe exists for Codex entries yet — everything stays report-only.")
 		return
 	}
-	fmt.Fprintf(w, "Disk use inside %s (%s total):\n\n", r.Dir, codex.HumanBytes(r.TotalBytes))
+
+	fmt.Fprintln(w, "Connections (shallow map — read-only):")
+	width := 20
+	for _, e := range entries {
+		if len(e.Name) > width {
+			width = len(e.Name)
+		}
+	}
+	for _, e := range entries {
+		switch e.Connection {
+		case shallowmap.Connected:
+			fmt.Fprintf(w, "  %-*s %10s   connected — %s\n", width, e.Name, codex.HumanBytes(e.TotalBytes), e.Evidence)
+		default:
+			fmt.Fprintf(w, "  %-*s %10s   unknown — nothing obvious points here, but that is NOT proof it's safe; your call\n", width, e.Name, codex.HumanBytes(e.TotalBytes))
+		}
+	}
+}
+
+// reportRenderOpts carries renderVisibility's optional configuration
+// (display name, provenance annotations). It exists so both remain optional
+// via a single trailing variadic — see the comment on renderVisibility.
+type reportRenderOpts struct {
+	DisplayName string
+	// Provenance is the set of entry names (matched by exact name, same
+	// tool) noticed appearing during a watched `watch` session. A nil map is
+	// the zero value and simply annotates nothing.
+	Provenance map[string]bool
+}
+
+// renderVisibility prints the disk report in plain language. opts is variadic
+// so existing (pre-multi-tool) call sites — including main_test.go, which
+// this task must leave unmodified — keep compiling unchanged; a zero-value
+// (absent) opts reproduces today's exact wording byte-for-byte, with no
+// provenance annotations.
+func renderVisibility(w io.Writer, r visibility.Report, opts ...reportRenderOpts) {
+	var o reportRenderOpts
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	name := "Codex"
+	if o.DisplayName != "" {
+		name = o.DisplayName
+	}
+	isCodex := name == "Codex"
+
+	if !r.DirExists {
+		if isCodex {
+			fmt.Fprintf(w, "No Codex directory found at %s — nothing is using disk here.\n", r.Dir)
+		} else {
+			fmt.Fprintf(w, "No %s directory found at %s — nothing is using disk here.\n", name, r.Dir)
+		}
+		return
+	}
+	if isCodex {
+		fmt.Fprintf(w, "Disk use inside %s (%s total):\n\n", r.Dir, codex.HumanBytes(r.TotalBytes))
+	} else {
+		fmt.Fprintf(w, "%s disk use inside %s (%s total):\n\n", name, r.Dir, codex.HumanBytes(r.TotalBytes))
+	}
 	for _, e := range r.Entries {
 		line := fmt.Sprintf("  %-24s %10s  (%d files)", e.Name, codex.HumanBytes(e.TotalBytes), e.FileCount)
 		if e.Stale {
@@ -448,10 +755,17 @@ func renderVisibility(w io.Writer, r visibility.Report) {
 		if e.ReadError != "" {
 			line += "  (couldn't read everything here)"
 		}
+		if o.Provenance[e.Name] {
+			line += " — appeared during a watched session"
+		}
 		fmt.Fprintln(w, line)
 	}
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "CodexSSD only ever tidies its known Codex log files; the rest is")
+	if isCodex {
+		fmt.Fprintln(w, "CodexSSD only ever tidies its known Codex log files; the rest is")
+	} else {
+		fmt.Fprintf(w, "CodexSSD only ever tidies its known %s files; the rest is\n", name)
+	}
 	fmt.Fprintln(w, "yours to decide on. Nothing above has been touched.")
 }
 
@@ -461,8 +775,9 @@ func cmdPrune(args []string) int {
 	fs := flag.NewFlagSet("prune", flag.ContinueOnError)
 	dryRun := fs.Bool("dry-run", false, "list what would be released, without moving anything")
 	jsonOut := fs.Bool("json", false, "output as JSON")
+	toolName := fs.String("tool", "codex", "which AI tool's backups to prune (codex, claude)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: codexssd prune [--dry-run] [--json]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: codexssd prune [--dry-run] [--json] [--tool codex|claude]\n\n")
 		fmt.Fprintf(os.Stderr, "Move recycling-bin backups past their ~2-week hold into the OS Trash.\n\n")
 		fs.PrintDefaults()
 	}
@@ -470,10 +785,9 @@ func cmdPrune(args []string) int {
 		return 2
 	}
 
-	dir, err := codex.Dir()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "codexssd: could not determine your home directory: %v\n", err)
-		return 1
+	p, dir, code := resolveTool(*toolName)
+	if code != 0 {
+		return code
 	}
 
 	if *dryRun {
@@ -507,7 +821,7 @@ func cmdPrune(args []string) int {
 		return 1
 	}
 	if len(released) > 0 {
-		recordReceipt(recorder.Receipt{At: time.Now(), Action: "prune", BackupIDs: released})
+		recordReceipt(recorder.Receipt{At: time.Now(), Action: pruneAction(p), BackupIDs: released})
 	}
 	if *jsonOut {
 		if released == nil {
@@ -521,6 +835,15 @@ func cmdPrune(args []string) int {
 	}
 	fmt.Printf("Released %d backup(s) to the Trash (recoverable until you empty it).\n", len(released))
 	return 0
+}
+
+// pruneAction mirrors cleanAction/restoreAction: "prune" for the default
+// tool, "prune --tool <name>" otherwise. No Receipt schema change.
+func pruneAction(p tool.Profile) string {
+	if p.Name == "codex" {
+		return "prune"
+	}
+	return "prune --tool " + p.Name
 }
 
 // cmdSelf implements `codexssd self`: report CodexSSD's own footprint.

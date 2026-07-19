@@ -39,21 +39,27 @@ func ListBackups(codexDir string) ([]Backup, error) {
 	return backups, nil
 }
 
-// Restore moves every file recorded in backupDir's manifest back to its original
-// path, then removes the now-empty backup directory.
+// Restore moves every file in backupDir's manifest back to its original path,
+// then removes the emptied backup directory.
 //
-// SAFETY: moves via os.Rename only; refuses any recorded path that is not a known
-// Codex log; refuses to overwrite a file that already exists at the destination
-// (so a fresh live log is never clobbered). On partial failure it rolls back.
+// SAFETY: renames only; every path re-validated against the owning tool's
+// allow-list; never overwrites an existing file; rolls back on ANY partial
+// failure (a failed Rename or a failed MkdirAll for a later item's parent
+// dir both undo every item already restored this call).
 func Restore(backupDir string) error {
 	m, err := readManifest(backupDir)
 	if err != nil {
 		return err
 	}
-	// Pre-flight: validate every item before moving anything.
+	prof, err := profileFor(m.Tool)
+	if err != nil {
+		return err
+	}
+	// The bin lives at <toolDir>/codexssd-backups/<timestamp>.
+	toolDir := filepath.Dir(filepath.Dir(backupDir))
 	for _, it := range m.Items {
-		if !isCodexLog(it.OriginalPath) {
-			return fmt.Errorf("refusing to restore non-Codex file: %s", it.OriginalPath)
+		if !prof.Allows(toolDir, it.OriginalPath) {
+			return fmt.Errorf("refusing to restore file outside %s's own-file allow-list: %s", prof.DisplayName, it.OriginalPath)
 		}
 		if _, err := os.Stat(it.OriginalPath); err == nil {
 			return fmt.Errorf("refusing to overwrite existing file: %s", it.OriginalPath)
@@ -61,19 +67,46 @@ func Restore(backupDir string) error {
 	}
 
 	var moved [][2]string // (from, to) for rollback
+	// rollback undoes every restore completed so far in this call, so a
+	// failure partway through never leaves an item restored-but-still-listed
+	// in the manifest (which would make a retry refuse as "already exists").
+	rollback := func() {
+		for _, mv := range moved {
+			_ = os.Rename(mv[1], mv[0])
+		}
+	}
 	for _, it := range m.Items {
-		src := filepath.Join(backupDir, it.Name)
+		src := filepath.Join(backupDir, filepath.FromSlash(it.Name))
+		// The original parent may have been tidied away since the move.
+		if err := os.MkdirAll(filepath.Dir(it.OriginalPath), 0o700); err != nil {
+			rollback()
+			return fmt.Errorf("restoring %s: %w", it.Name, err)
+		}
 		if err := os.Rename(src, it.OriginalPath); err != nil {
-			for _, mv := range moved {
-				_ = os.Rename(mv[1], mv[0])
-			}
+			rollback()
 			return fmt.Errorf("restoring %s: %w", it.Name, err)
 		}
 		moved = append(moved, [2]string{src, it.OriginalPath})
 	}
 
-	// Clean up the now-empty backup directory (manifest + dir only; never a log).
+	// Tidy the emptied backup: manifest, then now-empty dirs bottom-up.
+	// os.Remove refuses non-empty dirs, so an unexpectedly present file makes
+	// this a no-op rather than a delete — deliberately NOT os.RemoveAll.
 	_ = os.Remove(filepath.Join(backupDir, manifestName))
-	_ = os.Remove(backupDir)
+	removeEmptyDirs(backupDir)
 	return nil
+}
+
+// removeEmptyDirs removes dir and any now-empty subdirectories, deepest first.
+func removeEmptyDirs(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			removeEmptyDirs(filepath.Join(dir, e.Name()))
+		}
+	}
+	_ = os.Remove(dir) // fails (harmlessly) if anything remains
 }

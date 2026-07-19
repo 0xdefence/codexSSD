@@ -29,7 +29,7 @@ const maxRecords = 1000
 // Receipt is the single record appended at the end of a session or mutation.
 type Receipt struct {
 	At           time.Time `json:"at"`
-	Action       string    `json:"action"` // "clean" | "restore" | "prune" | "watch"
+	Action       string    `json:"action"` // free-form: base command + optional " --tool <name>" (e.g. "clean --tool claude")
 	DurationSec  float64   `json:"duration_sec,omitempty"`
 	DiskWritten  int64     `json:"disk_written_bytes,omitempty"`
 	PeakMBPerMin float64   `json:"peak_mb_per_min,omitempty"`
