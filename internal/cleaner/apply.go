@@ -28,6 +28,7 @@ type ManifestItem struct {
 // Manifest is the receipt written into each backup directory. It makes the move
 // recoverable and lets a later phase release the backup after HoldUntil.
 type Manifest struct {
+	Tool      string         `json:"tool,omitempty"` // "" means codex (legacy)
 	MovedAt   time.Time      `json:"moved_at"`
 	HoldUntil time.Time      `json:"hold_until"`
 	Items     []ManifestItem `json:"items"`
@@ -42,17 +43,23 @@ func (p Plan) Apply(now time.Time) (string, error) {
 // and writes a manifest whose HoldUntil is now+hold. It returns the backup
 // directory path.
 //
-// SAFETY: MOVES via os.Rename only — it never deletes a log file. Every item is
-// re-checked against isCodexLog before being moved. On any move failure, files
-// already moved this call are moved back (rollback) so a torn database is never
-// left behind. `now` is injected so the directory name is deterministic/testable.
+// SAFETY: MOVES via os.Rename only — it never deletes a file. Every item is
+// re-checked against the owning profile's allow-list before being moved. On any
+// move (or MkdirAll) failure, files already moved this call are moved back
+// (rollback) so a torn database is never left behind. `now` is injected so the
+// directory name is deterministic/testable.
 func (p Plan) ApplyWithHold(now time.Time, hold time.Duration) (string, error) {
 	if p.Empty() {
 		return "", errors.New("nothing to move aside")
 	}
+	prof, err := profileFor(p.Tool)
+	if err != nil {
+		return "", err
+	}
+	toolDir := filepath.Dir(p.BackupRoot)
 	for _, it := range p.Items {
-		if !isCodexLog(it.Path) {
-			return "", fmt.Errorf("refusing to move non-Codex file: %s", it.Path)
+		if !prof.Allows(toolDir, it.Path) {
+			return "", fmt.Errorf("refusing to move file outside %s's own-file allow-list: %s", prof.DisplayName, it.Path)
 		}
 	}
 
@@ -62,6 +69,7 @@ func (p Plan) ApplyWithHold(now time.Time, hold time.Duration) (string, error) {
 	}
 
 	manifest := Manifest{
+		Tool:      p.Tool,
 		MovedAt:   now,
 		HoldUntil: now.Add(hold),
 	}
@@ -75,7 +83,13 @@ func (p Plan) ApplyWithHold(now time.Time, hold time.Duration) (string, error) {
 	}
 
 	for _, it := range p.Items {
-		target := filepath.Join(dest, it.Name)
+		target := filepath.Join(dest, filepath.FromSlash(it.Name))
+		// Nested own-files (e.g. Claude transcripts) keep their relative
+		// structure inside the backup so restore is a pure mirror image.
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			rollback()
+			return "", err
+		}
 		if err := os.Rename(it.Path, target); err != nil {
 			rollback()
 			return "", fmt.Errorf("moving %s: %w", it.Name, err)

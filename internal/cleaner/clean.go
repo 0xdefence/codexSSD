@@ -1,24 +1,25 @@
-// Package cleaner safely tidies Codex's OWN log files by MOVING them into a
-// recoverable recycling bin — never by hard-deleting.
+// Package cleaner safely tidies an AI coding tool's OWN files by MOVING them
+// into a recoverable recycling bin — never by hard-deleting.
 //
 // SAFETY (non-negotiable):
-//   - It only ever acts on Codex's known log files (codex.LogFileNames).
-//   - It MOVES files aside; it never deletes a log file. Permanent deletion must
-//     be a separate, explicit user action (not in this build).
+//   - It only ever acts on files a tool.Profile's allow-list names (checked via
+//     Profile.Allows, re-verified on every move and every restore).
+//   - It MOVES files aside; it never deletes one. Permanent deletion must be a
+//     separate, explicit user action (not in this build).
 //   - Computing a Plan is read-only; only Plan.Apply touches the filesystem.
 package cleaner
 
 import (
 	"path/filepath"
+	"time"
 
-	"github.com/0xdefence/codexssd/internal/codex"
+	"github.com/0xdefence/codexssd/internal/tool"
 )
 
-// BackupDirName is the recycling-bin root, created under ~/.codex. Moved-aside
-// files land in a timestamped subdirectory beneath it. Keeping the bin under
-// ~/.codex puts it on the same filesystem as the logs, so moves are atomic
-// renames (no byte copy) — in keeping with the low-write design.
-const BackupDirName = "codexssd-backups"
+// BackupDirName is the recycling-bin root, created inside each tool's data dir
+// so moves stay atomic renames on one filesystem. Canonical value lives in the
+// tool package (profiles must exclude it from scans without an import cycle).
+const BackupDirName = tool.BackupDirName
 
 // PlanItem describes one file that clean would move aside.
 type PlanItem struct {
@@ -27,10 +28,10 @@ type PlanItem struct {
 	Size int64  `json:"size_bytes"`
 }
 
-// Plan is a read-only description of what clean WOULD move aside. Building a Plan
-// performs no writes.
+// Plan is a read-only description of what clean WOULD move aside.
 type Plan struct {
-	CodexDir   string     `json:"codex_dir"`
+	Tool       string     `json:"tool,omitempty"` // "" means codex (pre-multi-tool plans)
+	CodexDir   string     `json:"codex_dir"`      // the tool's data dir; JSON name kept for compatibility
 	BackupRoot string     `json:"backup_root"`
 	Items      []PlanItem `json:"items"`
 	TotalBytes int64      `json:"total_bytes"`
@@ -39,34 +40,32 @@ type Plan struct {
 // Empty reports whether there is nothing to move aside.
 func (p Plan) Empty() bool { return len(p.Items) == 0 }
 
-// PlanCodexLogs inspects Codex's own logs in codexDir and returns a move-aside
-// plan.
-//
-// SAFETY: read-only. It only ever considers codex.LogFileNames.
-func PlanCodexLogs(codexDir string) (Plan, error) {
-	report := codex.ScanLogs(codexDir)
+// PlanTool inspects toolDir and returns a move-aside plan for the profile's own
+// files. staleAfter gates glob-listed files; fixed files always qualify.
+// SAFETY: read-only; items come exclusively from Profile.CleanablePaths.
+func PlanTool(p tool.Profile, toolDir string, now time.Time, staleAfter time.Duration) (Plan, error) {
 	plan := Plan{
-		CodexDir:   codexDir,
-		BackupRoot: filepath.Join(codexDir, BackupDirName),
+		Tool:       p.Name,
+		CodexDir:   toolDir,
+		BackupRoot: filepath.Join(toolDir, BackupDirName),
 	}
-	for _, f := range report.Files {
-		if !f.Exists {
-			continue
-		}
-		plan.Items = append(plan.Items, PlanItem{Name: f.Name, Path: f.Path, Size: f.Size})
+	for _, f := range p.CleanablePaths(toolDir, now, staleAfter) {
+		plan.Items = append(plan.Items, PlanItem{Name: f.Rel, Path: f.Path, Size: f.Size})
 		plan.TotalBytes += f.Size
 	}
 	return plan, nil
 }
 
-// isCodexLog is the safety gate: it reports whether path is one of Codex's own
-// known log files. The cleaner must never move or restore anything this rejects.
-func isCodexLog(path string) bool {
-	base := filepath.Base(path)
-	for _, name := range codex.LogFileNames {
-		if base == name {
-			return true
-		}
+// PlanCodexLogs is the Phase-1 entry point, unchanged for existing callers.
+// Codex's fixed logs ignore staleness, so now/staleAfter are zero.
+func PlanCodexLogs(codexDir string) (Plan, error) {
+	return PlanTool(tool.Codex(), codexDir, time.Time{}, 0)
+}
+
+// profileFor resolves a stored tool name; empty means codex (legacy manifests).
+func profileFor(name string) (tool.Profile, error) {
+	if name == "" {
+		name = "codex"
 	}
-	return false
+	return tool.ByName(name)
 }
