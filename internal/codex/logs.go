@@ -3,19 +3,14 @@ package codex
 import (
 	"os"
 	"path/filepath"
+
+	"github.com/0xdefence/codexssd/internal/tool"
 )
 
 // LogFileNames are Codex's OWN local SQLite log files, relative to ~/.codex.
-//
-// These are the ONLY files codexssd may ever act on by itself (and, in Phase 1,
-// it only reports on them — it does not move or delete anything). The public
-// GitHub issue that motivates this tool reported these files writing extremely
-// aggressively and bloating over time.
-var LogFileNames = []string{
-	"logs_2.sqlite",
-	"logs_2.sqlite-wal",
-	"logs_2.sqlite-shm",
-}
+// The canonical definition now lives in the Codex tool profile; this alias
+// keeps existing callers and the documented safety rule pointing at one list.
+var LogFileNames = tool.Codex().OwnFixedFiles
 
 // LogFile is a read-only snapshot of one Codex log file's presence and size.
 type LogFile struct {
