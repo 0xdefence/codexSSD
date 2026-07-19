@@ -9,12 +9,12 @@
 package behavior
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/0xdefence/codexssd/internal/recorder"
@@ -99,7 +99,11 @@ func ProvenancePath() (string, error) {
 }
 
 // Load reads recorded events; a missing file means nothing recorded (nil, nil).
-// Unparseable lines are skipped — a damaged history must not brick `report`.
+//
+// Lines are parsed independently (not as one JSON stream): a single corrupted
+// line must not take the rest of the history down with it, so each line is
+// unmarshaled on its own and unparseable ones are simply skipped — a damaged
+// history must not brick `report`.
 func Load(path string) ([]Event, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -109,11 +113,13 @@ func Load(path string) ([]Event, error) {
 		return nil, err
 	}
 	var events []Event
-	dec := json.NewDecoder(bytes.NewReader(data))
-	for {
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
 		var e Event
-		if err := dec.Decode(&e); err != nil {
-			break
+		if json.Unmarshal([]byte(line), &e) != nil {
+			continue // skip: one bad line must not brick the rest of the history
 		}
 		events = append(events, e)
 	}

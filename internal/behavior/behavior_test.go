@@ -60,3 +60,24 @@ func TestLoadMissingFileIsNil(t *testing.T) {
 		t.Errorf("Load(missing) = %v, %v; want nil, nil", evs, err)
 	}
 }
+
+// TestLoadSkipsOnlyBadLine pins the "unparseable lines skipped" contract
+// literally: a single corrupted line must not take the rest of the history
+// down with it. A naive json.Decoder loop that breaks on the first decode
+// error would truncate everything after the bad line — this must not happen.
+func TestLoadSkipsOnlyBadLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "provenance.jsonl")
+	content := `{"time":"2026-07-18T10:00:00Z","tool":"codex","entry":"a"}` + "\n" +
+		"not json at all\n" +
+		`{"time":"2026-07-18T11:00:00Z","tool":"codex","entry":"b"}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	evs, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(evs) != 2 || evs[0].Entry != "a" || evs[1].Entry != "b" {
+		t.Fatalf("Load = %+v, want events for both a and b, garbage line skipped", evs)
+	}
+}
