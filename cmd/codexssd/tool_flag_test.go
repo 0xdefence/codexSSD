@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,6 +41,47 @@ func TestReportConnectionsClaude(t *testing.T) {
 	writeAgedFile(t, filepath.Join(home, ".claude", "projects", "-Users-jo-app", "s1.jsonl"), 40*24*time.Hour)
 	if code := run([]string{"report", "--tool", "claude", "--connections"}); code != 0 {
 		t.Errorf("report --connections exit = %d, want 0", code)
+	}
+}
+
+// TestReportShowsProvenance drives `report` end-to-end against a temp $HOME
+// with a pre-seeded provenance history (as `watch` would have written it) and
+// confirms report annotates the matching entry in its human output.
+// recorder.Dir() (internal/recorder/jsonl.go) resolves to ~/.codexssd, so
+// that's where behavior.ProvenancePath() looks for provenance.jsonl too.
+func TestReportShowsProvenance(t *testing.T) {
+	home := withTempHome(t)
+	writeAgedFile(t, filepath.Join(home, ".codex", "cache-v2", "f.bin"), time.Hour)
+
+	prov := filepath.Join(home, ".codexssd", "provenance.jsonl")
+	if err := os.MkdirAll(filepath.Dir(prov), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	line := `{"time":"2026-07-18T10:00:00Z","tool":"codex","entry":"cache-v2"}` + "\n"
+	if err := os.WriteFile(prov, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	origStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	code := run([]string{"report"})
+	w.Close()
+	os.Stdout = origStdout
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatal(err)
+	}
+
+	if code != 0 {
+		t.Errorf("report exit = %d, want 0", code)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "cache-v2") || !strings.Contains(out, "appeared during a watched session") {
+		t.Errorf("report output missing provenance annotation:\n%s", out)
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/0xdefence/codexssd/internal/agent"
+	"github.com/0xdefence/codexssd/internal/behavior"
 	"github.com/0xdefence/codexssd/internal/cleaner"
 	"github.com/0xdefence/codexssd/internal/codex"
 	"github.com/0xdefence/codexssd/internal/config"
@@ -620,22 +621,56 @@ func cmdReport(args []string) int {
 		claudeEntries = shallowmap.ScanClaudeProjects(dir, time.Now(), cfg.StaleAfter())
 	}
 
+	// Provenance is loaded best-effort and scoped to the current tool: a
+	// damaged or missing history must never block `report`, and behavior
+	// noticed for one tool must never be attributed to another.
+	provEvents, provNames := loadProvenanceFor(p.Name)
+
 	if *jsonOut {
-		if !*connections {
-			return emitJSON(rep)
-		}
 		out := struct {
 			visibility.Report
 			Connections []shallowmap.ProjectEntry `json:"connections,omitempty"`
-		}{rep, claudeEntries}
+			Provenance  []behavior.Event          `json:"provenance,omitempty"`
+		}{rep, claudeEntries, provEvents}
 		return emitJSON(out)
 	}
 
-	renderVisibility(os.Stdout, rep, p.DisplayName)
+	renderVisibility(os.Stdout, rep, reportRenderOpts{DisplayName: p.DisplayName, Provenance: provNames})
 	if *connections {
 		renderConnections(os.Stdout, p, claudeEntries)
 	}
 	return 0
+}
+
+// loadProvenanceFor loads the recorded provenance history and filters it to
+// events for toolName, returning both the filtered events (for --json) and a
+// name-set for quick human-output annotation lookups. Any failure to resolve
+// the path or read the history is a warning, not an error — a damaged or
+// missing provenance file must never block `report`.
+func loadProvenanceFor(toolName string) ([]behavior.Event, map[string]bool) {
+	path, err := behavior.ProvenancePath()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codexssd: note: couldn't determine provenance path: %v\n", err)
+		return nil, nil
+	}
+	all, err := behavior.Load(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codexssd: note: couldn't read provenance history: %v\n", err)
+		return nil, nil
+	}
+	var events []behavior.Event
+	var names map[string]bool
+	for _, e := range all {
+		if e.Tool != toolName {
+			continue
+		}
+		events = append(events, e)
+		if names == nil {
+			names = make(map[string]bool)
+		}
+		names[e.Entry] = true
+	}
+	return events, names
 }
 
 // renderConnections prints the shallow connection map section for `report
@@ -666,14 +701,30 @@ func renderConnections(w io.Writer, p tool.Profile, entries []shallowmap.Project
 	}
 }
 
-// renderVisibility prints the disk report in plain language. displayName is
-// variadic so existing (pre-multi-tool) call sites — including main_test.go,
-// which this task must leave unmodified — keep compiling unchanged; it
-// defaults to "Codex", which reproduces today's exact wording byte-for-byte.
-func renderVisibility(w io.Writer, r visibility.Report, displayName ...string) {
+// reportRenderOpts carries renderVisibility's optional configuration
+// (display name, provenance annotations). It exists so both remain optional
+// via a single trailing variadic — see the comment on renderVisibility.
+type reportRenderOpts struct {
+	DisplayName string
+	// Provenance is the set of entry names (matched by exact name, same
+	// tool) noticed appearing during a watched `watch` session. A nil map is
+	// the zero value and simply annotates nothing.
+	Provenance map[string]bool
+}
+
+// renderVisibility prints the disk report in plain language. opts is variadic
+// so existing (pre-multi-tool) call sites — including main_test.go, which
+// this task must leave unmodified — keep compiling unchanged; a zero-value
+// (absent) opts reproduces today's exact wording byte-for-byte, with no
+// provenance annotations.
+func renderVisibility(w io.Writer, r visibility.Report, opts ...reportRenderOpts) {
+	var o reportRenderOpts
+	if len(opts) > 0 {
+		o = opts[0]
+	}
 	name := "Codex"
-	if len(displayName) > 0 && displayName[0] != "" {
-		name = displayName[0]
+	if o.DisplayName != "" {
+		name = o.DisplayName
 	}
 	isCodex := name == "Codex"
 
@@ -700,6 +751,9 @@ func renderVisibility(w io.Writer, r visibility.Report, displayName ...string) {
 		}
 		if e.ReadError != "" {
 			line += "  (couldn't read everything here)"
+		}
+		if o.Provenance[e.Name] {
+			line += " — appeared during a watched session"
 		}
 		fmt.Fprintln(w, line)
 	}

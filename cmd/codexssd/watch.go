@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/0xdefence/codexssd/internal/behavior"
 	"github.com/0xdefence/codexssd/internal/codex"
 	"github.com/0xdefence/codexssd/internal/config"
 	"github.com/0xdefence/codexssd/internal/monitor"
@@ -52,6 +53,12 @@ type watchDeps struct {
 	now     func() time.Time
 	tick    <-chan time.Time
 	stop    <-chan struct{}
+
+	// observeBehavior is best-effort behavioral tracking: given the current
+	// agent-running state and timestamp, it returns any newly-noticed entries.
+	// Optional — nil disables tracking entirely (e.g. ProvenancePath failed at
+	// startup), and must never itself block, slow, or fail the watch loop.
+	observeBehavior func(agentRunning bool, now time.Time) []behavior.Event
 }
 
 // cmdWatch implements `codexssd watch`: a foreground, read-only monitor.
@@ -86,6 +93,21 @@ func cmdWatch(args []string) int {
 		notifier = func(string, string) error { return nil }
 	}
 
+	// Behavioral tracking: notice new top-level entries appearing in dir while
+	// watching runs, so `report` can later say "this appeared during a
+	// watched session" — a far stronger signal than guessing by name alone.
+	// Best-effort throughout: a failure to resolve the provenance path just
+	// disables tracking for this session (one warning), never the watch loop.
+	var trackBehavior func(agentRunning bool, now time.Time) []behavior.Event
+	if provPath, err := behavior.ProvenancePath(); err != nil {
+		fmt.Fprintf(os.Stderr, "codexssd: note: couldn't determine provenance path: %v — behavioral tracking disabled for this session.\n", err)
+	} else {
+		tracker := behavior.NewTracker("codex", provPath, readDirNames(dir))
+		trackBehavior = func(agentRunning bool, now time.Time) []behavior.Event {
+			return tracker.Observe(readDirNames(dir), agentRunning, now)
+		}
+	}
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	stop := make(chan struct{})
@@ -95,17 +117,34 @@ func cmdWatch(args []string) int {
 	defer ticker.Stop()
 
 	deps := watchDeps{
-		scan:    func() codex.LogReport { return codex.ScanLogs(dir) },
-		memory:  func() (int64, error) { return codex.ProcessMemory() },
-		running: codex.IsCodexRunning,
-		notify:  notifier,
-		now:     time.Now,
-		tick:    ticker.C,
-		stop:    stop,
+		scan:            func() codex.LogReport { return codex.ScanLogs(dir) },
+		memory:          func() (int64, error) { return codex.ProcessMemory() },
+		running:         codex.IsCodexRunning,
+		notify:          notifier,
+		now:             time.Now,
+		tick:            ticker.C,
+		stop:            stop,
+		observeBehavior: trackBehavior,
 	}
 	rec := runWatch(os.Stdout, *jsonOut, cfg.MonitorThresholds(), deps)
 	recordReceipt(rec)
 	return 0
+}
+
+// readDirNames lists the top-level entry names in dir for behavioral
+// tracking. A read error (e.g. the directory briefly missing) yields no
+// names rather than an error — provenance is best-effort and must never
+// disturb the watch loop.
+func readDirNames(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
 }
 
 // watchEvent is the JSON line emitted per risk-level change with --json.
@@ -132,6 +171,15 @@ func runWatch(w io.Writer, jsonOut bool, th monitor.Thresholds, deps watchDeps) 
 		mem, _ := deps.memory() // best-effort; 0 when unknown
 		running, _ := deps.running()
 		now := deps.now()
+		// Behavioral tracking runs every poll (not gated by the risk-level
+		// print-suppression below): a quiet session should stay quiet on risk
+		// noise, but a newly-noticed entry is its own distinct, low-frequency
+		// signal worth surfacing immediately.
+		if deps.observeBehavior != nil {
+			for _, ev := range deps.observeBehavior(running, now) {
+				fmt.Fprintf(w, "noticed: %q appeared in ~/.codex while Codex was running\n", ev.Entry)
+			}
+		}
 		if len(samples) == 0 {
 			firstTotal = report.TotalBytes
 		}

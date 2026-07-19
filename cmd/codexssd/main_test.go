@@ -216,3 +216,48 @@ func TestRenderVisibilityReport(t *testing.T) {
 		t.Errorf("report must end with the report-only pointer:\n%s", out)
 	}
 }
+
+// TestRenderVisibilityAnnotatesProvenance pins the report-annotation contract:
+// an entry matching the provenance set gets the "appeared during a watched
+// session" suffix; the sibling entry has no data in the set and must stay
+// bare, so this also proves the annotation is per-entry, not blanket.
+func TestRenderVisibilityAnnotatesProvenance(t *testing.T) {
+	r := visibility.Report{
+		Dir: "/home/x/.codex", DirExists: true, TotalBytes: 500,
+		Entries: []visibility.Entry{
+			{Name: "cache-v2", TotalBytes: 300, FileCount: 1},
+			{Name: "sessions", TotalBytes: 200, FileCount: 1},
+		},
+	}
+	var buf bytes.Buffer
+	renderVisibility(&buf, r, reportRenderOpts{Provenance: map[string]bool{"cache-v2": true}})
+	out := buf.String()
+	if !strings.Contains(out, "cache-v2") || !strings.Contains(out, "— appeared during a watched session") {
+		t.Errorf("output missing provenance annotation:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "sessions") && strings.Contains(line, "appeared during a watched session") {
+			t.Errorf("unrelated entry got annotated:\n%s", out)
+		}
+	}
+}
+
+// TestRenderVisibilityNoProvenanceIsByteIdentical guards the "default output
+// stays byte-identical" promise: calling renderVisibility with the old 2-arg
+// form (no opts at all — as main_test.go's TestRenderVisibilityReport still
+// does) must produce exactly the same bytes as calling it with an explicit,
+// empty reportRenderOpts.
+func TestRenderVisibilityNoProvenanceIsByteIdentical(t *testing.T) {
+	r := visibility.Report{
+		Dir: "/home/x/.codex", DirExists: true, TotalBytes: 500,
+		Entries: []visibility.Entry{
+			{Name: "sessions", TotalBytes: 500, FileCount: 2},
+		},
+	}
+	var withoutOpts, withEmptyOpts bytes.Buffer
+	renderVisibility(&withoutOpts, r)
+	renderVisibility(&withEmptyOpts, r, reportRenderOpts{})
+	if withoutOpts.String() != withEmptyOpts.String() {
+		t.Errorf("no-opts output diverged from empty-opts output:\n%q\nvs\n%q", withoutOpts.String(), withEmptyOpts.String())
+	}
+}
