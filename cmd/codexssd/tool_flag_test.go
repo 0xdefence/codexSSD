@@ -34,6 +34,14 @@ func writeAgedFile(t *testing.T, path string, age time.Duration) {
 	}
 }
 
+func TestReportConnectionsClaude(t *testing.T) {
+	home := withTempHome(t)
+	writeAgedFile(t, filepath.Join(home, ".claude", "projects", "-Users-jo-app", "s1.jsonl"), 40*24*time.Hour)
+	if code := run([]string{"report", "--tool", "claude", "--connections"}); code != 0 {
+		t.Errorf("report --connections exit = %d, want 0", code)
+	}
+}
+
 func TestStatusRejectsUnknownTool(t *testing.T) {
 	withTempHome(t)
 	if code := run([]string{"status", "--tool", "clippy"}); code != 2 {

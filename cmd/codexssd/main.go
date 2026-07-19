@@ -24,6 +24,7 @@ import (
 	"github.com/0xdefence/codexssd/internal/mcpserver"
 	"github.com/0xdefence/codexssd/internal/recorder"
 	"github.com/0xdefence/codexssd/internal/self"
+	"github.com/0xdefence/codexssd/internal/shallowmap"
 	"github.com/0xdefence/codexssd/internal/tool"
 	"github.com/0xdefence/codexssd/internal/tui"
 	"github.com/0xdefence/codexssd/internal/visibility"
@@ -595,8 +596,9 @@ func cmdReport(args []string) int {
 	fs := flag.NewFlagSet("report", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "output the report as JSON")
 	toolName := fs.String("tool", "codex", "which AI tool to report on (codex, claude)")
+	connections := fs.Bool("connections", false, "probe whether anything obvious points at each entry (shallow map, read-only)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: codexssd report [--json] [--tool codex|claude]\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: codexssd report [--json] [--tool codex|claude] [--connections]\n\n")
 		fmt.Fprintf(os.Stderr, "Show what's using disk inside a tool's own directory (read-only).\n\n")
 		fs.PrintDefaults()
 	}
@@ -609,11 +611,59 @@ func cmdReport(args []string) int {
 	}
 	cfg := loadConfig()
 	rep := visibility.Scan(dir, time.Now(), cfg.StaleAfter())
-	if *jsonOut {
-		return emitJSON(rep)
+
+	// --connections only has real coverage for Claude Code today (Codex has no
+	// shallow probe yet). It is entirely additive: without it, output — JSON
+	// included — is byte-identical to before this flag existed.
+	var claudeEntries []shallowmap.ProjectEntry
+	if *connections && p.Name == "claude" {
+		claudeEntries = shallowmap.ScanClaudeProjects(dir, time.Now(), cfg.StaleAfter())
 	}
+
+	if *jsonOut {
+		if !*connections {
+			return emitJSON(rep)
+		}
+		out := struct {
+			visibility.Report
+			Connections []shallowmap.ProjectEntry `json:"connections,omitempty"`
+		}{rep, claudeEntries}
+		return emitJSON(out)
+	}
+
 	renderVisibility(os.Stdout, rep, p.DisplayName)
+	if *connections {
+		renderConnections(os.Stdout, p, claudeEntries)
+	}
 	return 0
+}
+
+// renderConnections prints the shallow connection map section for `report
+// --connections`. Coverage is honest about its own limits: Codex has no
+// shallow probe yet, and that gap is stated outright rather than silently
+// producing an empty section (no-silent-caps).
+func renderConnections(w io.Writer, p tool.Profile, entries []shallowmap.ProjectEntry) {
+	fmt.Fprintln(w)
+	if p.Name != "claude" {
+		fmt.Fprintln(w, "Connections: no shallow probe exists for Codex entries yet — everything stays report-only.")
+		return
+	}
+
+	fmt.Fprintln(w, "Connections (shallow map — read-only):")
+	width := 20
+	for _, e := range entries {
+		if len(e.Name) > width {
+			width = len(e.Name)
+		}
+	}
+	for _, e := range entries {
+		switch e.Connection {
+		case shallowmap.Connected:
+			fmt.Fprintf(w, "  %-*s %10s   connected — %s\n", width, e.Name, codex.HumanBytes(e.TotalBytes), e.Evidence)
+		default:
+			fmt.Fprintf(w, "  %-*s %10s   unknown — nothing obvious points here, but that is NOT proof it's safe; your call\n", width, e.Name, codex.HumanBytes(e.TotalBytes))
+		}
+	}
 }
 
 // renderVisibility prints the disk report in plain language. displayName is
