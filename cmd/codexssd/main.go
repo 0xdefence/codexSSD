@@ -101,9 +101,10 @@ func run(args []string) int {
 
 // cmdStatus implements `codexssd status`.
 //
-// SAFETY: this command is 100% READ-ONLY. It only locates ~/.codex and calls
-// os.Stat on Codex's known log files. It moves nothing, deletes nothing, and
-// writes nothing to disk.
+// SAFETY: this command is 100% READ-ONLY. It only locates the resolved
+// tool's own data directory (~/.codex for codex, ~/.claude for Claude Code,
+// etc.) and calls os.Stat on that profile's own known files. It moves
+// nothing, deletes nothing, and writes nothing to disk.
 func cmdStatus(args []string) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "output the report as JSON")
@@ -265,9 +266,10 @@ func recordReceipt(r recorder.Receipt) {
 
 // cmdClean implements `codexssd clean`.
 //
-// Default is a read-only dry run. `--yes` moves Codex's own logs aside into the
-// recycling bin, but only after confirming Codex is not running. Nothing is ever
-// deleted.
+// Default is a read-only dry run. `--yes` moves the resolved tool's own
+// files (only what that tool's Profile allow-list names) aside into the
+// recycling bin, but only after confirming that tool is not running.
+// Nothing is ever deleted.
 func cmdClean(args []string) int {
 	fs := flag.NewFlagSet("clean", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "actually move the logs aside (default is a dry run)")
@@ -590,9 +592,10 @@ func printStatus(r codex.LogReport) {
 
 // cmdReport implements `codexssd report`.
 //
-// SAFETY: 100% read-only, and scoped to ~/.codex ONLY. It reports and points;
-// it never acts and never suggests CodexSSD act on anything beyond its own
-// known log files.
+// SAFETY: 100% read-only, and scoped to the resolved tool's own directory
+// ONLY (~/.codex for codex, ~/.claude for Claude Code, etc.). It reports and
+// points; it never acts and never suggests CodexSSD act on anything beyond
+// that tool's own known files.
 func cmdReport(args []string) int {
 	fs := flag.NewFlagSet("report", flag.ContinueOnError)
 	jsonOut := fs.Bool("json", false, "output the report as JSON")

@@ -43,9 +43,18 @@ func (p Plan) Empty() bool { return len(p.Items) == 0 }
 // PlanTool inspects toolDir and returns a move-aside plan for the profile's own
 // files. staleAfter gates glob-listed files; fixed files always qualify.
 // SAFETY: read-only; items come exclusively from Profile.CleanablePaths.
+//
+// Plan.Tool is left "" for the codex profile rather than set to "codex":
+// empty-means-codex is the documented legacy semantics (see profileFor), and
+// codex plans/manifests must stay byte-identical to pre-multi-tool JSON —
+// which never had a "tool" key. Every other profile's name is recorded as-is.
 func PlanTool(p tool.Profile, toolDir string, now time.Time, staleAfter time.Duration) (Plan, error) {
+	planTool := p.Name
+	if planTool == "codex" {
+		planTool = ""
+	}
 	plan := Plan{
-		Tool:       p.Name,
+		Tool:       planTool,
 		CodexDir:   toolDir,
 		BackupRoot: filepath.Join(toolDir, BackupDirName),
 	}
