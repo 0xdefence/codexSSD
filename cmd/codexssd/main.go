@@ -286,11 +286,29 @@ func cmdClean(args []string) int {
 		return code
 	}
 
-	// cfg is loaded up front (not just on --yes) because PlanTool needs
-	// StaleAfter() to gate glob-listed files; for codex this changes nothing,
-	// since its files are all fixed and ignore the stale gate either way.
-	cfg := loadConfig()
-	plan, err := cleaner.PlanTool(p, dir, time.Now(), cfg.StaleAfter())
+	// getConfig loads config lazily and at most once. Codex's own files are
+	// all fixed and ignore the stale gate, so its plan never needs to consult
+	// config at all — a plain dry-run `codexssd clean` must never load (and
+	// so never warn about) a malformed ~/.codexssd/config.json, matching
+	// pre-multi-tool behavior exactly. Glob-profile tools (Claude Code) DO
+	// need StaleAfter() to build the plan, even on a dry run.
+	var cfg config.Config
+	cfgLoaded := false
+	getConfig := func() config.Config {
+		if !cfgLoaded {
+			cfg = loadConfig()
+			cfgLoaded = true
+		}
+		return cfg
+	}
+
+	var plan cleaner.Plan
+	var err error
+	if p.Name == "codex" {
+		plan, err = cleaner.PlanTool(p, dir, time.Time{}, 0) // mirrors old PlanCodexLogs exactly
+	} else {
+		plan, err = cleaner.PlanTool(p, dir, time.Now(), getConfig().StaleAfter())
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "codexssd: could not inspect %s's files: %v\n", p.DisplayName, err)
 		return 1
@@ -338,7 +356,7 @@ func cmdClean(args []string) int {
 		return 0
 	}
 
-	dest, err := plan.ApplyWithHold(time.Now(), cfg.BinHold())
+	dest, err := plan.ApplyWithHold(time.Now(), getConfig().BinHold())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "codexssd: clean failed: %v\n", err)
 		return 1
