@@ -79,7 +79,14 @@ func (p Plan) ApplyWithHold(now time.Time, hold time.Duration) (string, error) {
 		for _, mv := range moved {
 			_ = os.Rename(mv[1], mv[0]) // best-effort move back
 		}
-		_ = os.Remove(dest)
+		// MkdirAll may have created nested subdirs under dest (e.g. for a
+		// Claude transcript's projects/<slug>/ parent) before a later item
+		// failed; a bare os.Remove(dest) only clears dest itself and silently
+		// no-ops when it's non-empty, orphaning those subdirs with no
+		// manifest. removeEmptyDirs walks bottom-up so every now-empty
+		// subdir it created is cleared too — still os.Remove only, never
+		// os.RemoveAll, so anything unexpectedly non-empty survives.
+		removeEmptyDirs(dest)
 	}
 
 	for _, it := range p.Items {

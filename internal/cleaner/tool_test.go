@@ -84,6 +84,128 @@ func TestApplyRefusesFileOutsideProfileAllowList(t *testing.T) {
 	}
 }
 
+// TestRestoreRollsBackOnMkdirAllFailure covers the reviewer-found defect where
+// a failed MkdirAll partway through Restore's move loop returned immediately
+// without undoing items already restored this call — leaving them at their
+// original path while the manifest still listed them, so a retry refused with
+// "refusing to overwrite existing file" and the backup was stuck forever.
+func TestRestoreRollsBackOnMkdirAllFailure(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	item1 := filepath.Join(dir, "projects", "proj-a", "s1.jsonl")
+	item2 := filepath.Join(dir, "projects", "proj-b", "s2.jsonl")
+	writeAged(t, item1, 40*24*time.Hour, now)
+	writeAged(t, item2, 40*24*time.Hour, now)
+
+	// Hand-craft the plan so item order (and therefore manifest/restore order)
+	// is deterministic: item1 must succeed and get rolled back when item2 fails.
+	plan := Plan{
+		Tool:       "claude",
+		CodexDir:   dir,
+		BackupRoot: filepath.Join(dir, BackupDirName),
+		Items: []PlanItem{
+			{Name: "projects/proj-a/s1.jsonl", Path: item1, Size: 4},
+			{Name: "projects/proj-b/s2.jsonl", Path: item2, Size: 4},
+		},
+	}
+	backupDir, err := plan.Apply(now)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// Apply only moves the file itself, so item2's original parent dir
+	// ("projects/proj-b") is left behind, empty. Replace it with a plain file
+	// so Restore's MkdirAll to recreate that parent fails with ENOTDIR.
+	blockerPath := filepath.Join(dir, "projects", "proj-b")
+	if err := os.Remove(blockerPath); err != nil {
+		t.Fatalf("removing empty original parent dir: %v", err)
+	}
+	if err := os.WriteFile(blockerPath, []byte("blocker"), 0o600); err != nil {
+		t.Fatalf("planting blocker file: %v", err)
+	}
+
+	if err := Restore(backupDir); err == nil {
+		t.Fatal("Restore succeeded despite a blocked parent dir; want error")
+	}
+
+	// item1 must have been rolled back into the backup, NOT left at its
+	// original path (which would desync it from the still-full manifest).
+	if _, err := os.Stat(item1); !os.IsNotExist(err) {
+		t.Error("item1 left at its original path after item2 failed; want rollback")
+	}
+	backedItem1 := filepath.Join(backupDir, "projects", "proj-a", "s1.jsonl")
+	if _, err := os.Stat(backedItem1); err != nil {
+		t.Errorf("item1 not rolled back into the backup dir: %v", err)
+	}
+
+	// Clear the blocker and retry: the backup must still be fully usable.
+	if err := os.Remove(blockerPath); err != nil {
+		t.Fatalf("removing blocker: %v", err)
+	}
+	if err := Restore(backupDir); err != nil {
+		t.Fatalf("retry Restore after clearing blocker: %v", err)
+	}
+	if _, err := os.Stat(item1); err != nil {
+		t.Errorf("item1 not restored on retry: %v", err)
+	}
+	if _, err := os.Stat(item2); err != nil {
+		t.Errorf("item2 not restored on retry: %v", err)
+	}
+	if _, err := os.Stat(backupDir); !os.IsNotExist(err) {
+		t.Error("backup dir should be gone after a full retry restore")
+	}
+}
+
+// TestApplyRollbackRemovesOrphanedNestedDirs covers the reviewer-found defect
+// where Apply's rollback moved files back but only called os.Remove(dest),
+// which silently no-ops when MkdirAll created nested subdirectories under dest
+// for an earlier, successfully-moved item — orphaning empty directories with
+// no manifest, invisible to ListBackups.
+func TestApplyRollbackRemovesOrphanedNestedDirs(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	item1 := filepath.Join(dir, "projects", "proj-a", "s1.jsonl")
+	item2 := filepath.Join(dir, "projects", "proj-b", "s2.jsonl")
+	writeAged(t, item1, 40*24*time.Hour, now)
+	writeAged(t, item2, 40*24*time.Hour, now)
+
+	backupRoot := filepath.Join(dir, BackupDirName)
+	plan := Plan{
+		Tool:       "claude",
+		CodexDir:   dir,
+		BackupRoot: backupRoot,
+		Items: []PlanItem{
+			{Name: "projects/proj-a/s1.jsonl", Path: item1, Size: 4},
+			{Name: "projects/proj-b/s2.jsonl", Path: item2, Size: 4},
+		},
+	}
+
+	// Force item2's Rename to fail (same trick as TestApplyRollsBackOnMoveFailure):
+	// pre-create a non-empty directory exactly where it would land, so item1
+	// moves successfully (creating dest/projects/proj-a via MkdirAll) before
+	// item2's move fails and triggers rollback.
+	dest := filepath.Join(backupRoot, now.Format(timestampLayout))
+	blocker := filepath.Join(dest, "projects", "proj-b", "s2.jsonl")
+	if err := os.MkdirAll(blocker, 0o700); err != nil {
+		t.Fatalf("setup mkdir: %v", err)
+	}
+	writeFile(t, filepath.Join(blocker, "keep"), 1) // non-empty so rename can't replace it
+
+	if _, err := plan.Apply(now); err == nil {
+		t.Fatal("Apply succeeded despite a blocked destination, want error")
+	}
+
+	// item1 must be rolled back to its original path...
+	if _, err := os.Stat(item1); err != nil {
+		t.Errorf("item1 not rolled back to original path: %v", err)
+	}
+	// ...and the now-empty nested dir MkdirAll created for it under dest must
+	// be gone too, not left as an orphan with no manifest.
+	if _, err := os.Stat(filepath.Join(dest, "projects", "proj-a")); !os.IsNotExist(err) {
+		t.Error("orphan empty dir left under dest after rollback")
+	}
+}
+
 func TestManifestWithoutToolFieldRestoresAsCodex(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()

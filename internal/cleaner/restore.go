@@ -43,7 +43,9 @@ func ListBackups(codexDir string) ([]Backup, error) {
 // then removes the emptied backup directory.
 //
 // SAFETY: renames only; every path re-validated against the owning tool's
-// allow-list; never overwrites an existing file; rolls back on partial failure.
+// allow-list; never overwrites an existing file; rolls back on ANY partial
+// failure (a failed Rename or a failed MkdirAll for a later item's parent
+// dir both undo every item already restored this call).
 func Restore(backupDir string) error {
 	m, err := readManifest(backupDir)
 	if err != nil {
@@ -65,16 +67,23 @@ func Restore(backupDir string) error {
 	}
 
 	var moved [][2]string // (from, to) for rollback
+	// rollback undoes every restore completed so far in this call, so a
+	// failure partway through never leaves an item restored-but-still-listed
+	// in the manifest (which would make a retry refuse as "already exists").
+	rollback := func() {
+		for _, mv := range moved {
+			_ = os.Rename(mv[1], mv[0])
+		}
+	}
 	for _, it := range m.Items {
 		src := filepath.Join(backupDir, filepath.FromSlash(it.Name))
 		// The original parent may have been tidied away since the move.
 		if err := os.MkdirAll(filepath.Dir(it.OriginalPath), 0o700); err != nil {
+			rollback()
 			return fmt.Errorf("restoring %s: %w", it.Name, err)
 		}
 		if err := os.Rename(src, it.OriginalPath); err != nil {
-			for _, mv := range moved {
-				_ = os.Rename(mv[1], mv[0])
-			}
+			rollback()
 			return fmt.Errorf("restoring %s: %w", it.Name, err)
 		}
 		moved = append(moved, [2]string{src, it.OriginalPath})
