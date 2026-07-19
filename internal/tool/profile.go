@@ -46,8 +46,28 @@ func Codex() Profile {
 	}
 }
 
-// All lists every supported profile. (Claude Code is added in a later task.)
-func All() []Profile { return []Profile{Codex()} }
+// Claude is the Claude Code profile. Its own recoverable data is session
+// transcripts (projects/<slug>/<id>.jsonl) and shell snapshots — and ONLY when
+// stale, because cleaning a transcript breaks `claude --resume` for that
+// session. Everything load-bearing (memory, settings, plugins, todos, skills)
+// is NeverTouch: small, valuable, and not clutter.
+func Claude() Profile {
+	return Profile{
+		Name:          "claude",
+		DisplayName:   "Claude Code",
+		DirName:       ".claude",
+		OwnStaleGlobs: []string{"projects/*/*.jsonl", "shell-snapshots/*"},
+		NeverTouch: []string{
+			"memory", "settings.json", "settings.local.json", "CLAUDE.md",
+			"plugins", "agents", "commands", "skills", "hooks", "todos",
+			"keybindings.json",
+		},
+		ProcessNames: []string{"claude"},
+	}
+}
+
+// All lists every supported profile.
+func All() []Profile { return []Profile{Codex(), Claude()} }
 
 // ByName resolves a CLI --tool value to a profile.
 func ByName(name string) (Profile, error) {
@@ -56,7 +76,7 @@ func ByName(name string) (Profile, error) {
 			return p, nil
 		}
 	}
-	return Profile{}, fmt.Errorf("unknown tool %q (supported: codex)", name)
+	return Profile{}, fmt.Errorf("unknown tool %q (supported: codex, claude)", name)
 }
 
 // Dir returns the tool's data directory under the user's home. Like codex.Dir,
