@@ -29,19 +29,35 @@ nothing here can hurt a user's machine or data.
 - **Flagging** other clutter for the user to decide on — report only, never
   acting — **[shipped]** (`report`)
 
+## Shipped since (2026-07)
+
+Two items originally listed as out of scope have since shipped, in the
+deliberately narrow form the roadmap describes:
+
+- **Support for other AI tools** — Claude Code is now supported end to end
+  (`status`, `report`, `clean`, `restore`, `prune` via `--tool claude`), gated
+  by its own per-tool allow-list (fresh session files are never touched,
+  because they power `claude --resume`). Cursor and Gemini CLI are still not
+  supported.
+- **Behavioural detection** — `watch` now records, best-effort, when a new
+  entry appears in `~/.codex` while Codex is running (Codex only for now), and
+  `report` annotates matching entries. This is observation only; it never acts
+  on what it notices.
+
 ## Out of scope for this build (deliberately deferred)
 
 These are real, valuable, and worth building — just *not yet*. Each one carries
 more risk or cost than the safe core, so it waits until trust is earned.
 
 - **Deleting anything on its own.** The tool only ever *moves aside*, and only
-  Codex's own logs. No automatic permanent deletion, ever, in this build.
+  a tool's own known files. No automatic permanent deletion, ever, in this
+  build.
 - **Cleaning up the user's actual project files automatically.** It can flag
   them, but it will not act on them.
 - **The deep relationship-map** between code files and modules. (A shallow,
-  cautious version may come in Phase 3; the full version is Phase 4.)
-- **Behavioural detection** (noticing a folder was created by a build command).
-- **Support for other AI tools** (Claude Code, Cursor, Gemini CLI) — Codex first.
+  cautious version has shipped for Claude Code in Phase 3; the full version is
+  Phase 4.)
+- **Cursor, Gemini CLI, and other AI tools** beyond Codex and Claude Code.
 - **Fancy interfaces** — editor plugins and a menu-bar app come later.
 - **Cost and token tracking, daily summaries, team settings.**
 

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/0xdefence/codexssd/internal/behavior"
 	"github.com/0xdefence/codexssd/internal/codex"
 	"github.com/0xdefence/codexssd/internal/config"
 	"github.com/0xdefence/codexssd/internal/monitor"
@@ -143,6 +144,41 @@ func scriptedDepsBaselineWAL(t *testing.T, totalBytes, walBytes int64) (watchDep
 		stop: stop,
 	}
 	return deps, &notified
+}
+
+// TestRunWatchPrintsBehaviorEvents pins the watch-side wiring for Phase 4
+// behavioral tracking: when observeBehavior reports a newly-noticed entry,
+// runWatch prints one plain "noticed:" line for it — independent of whether
+// the risk level changed, since watchDeps.observeBehavior is now injectable
+// just like every other loop effect.
+func TestRunWatchPrintsBehaviorEvents(t *testing.T) {
+	deps, _ := scriptedDeps(t, []int64{0, 10 << 20})
+	deps.observeBehavior = func(agentRunning bool, now time.Time) []behavior.Event {
+		if !agentRunning {
+			t.Fatalf("observeBehavior called with agentRunning=false; scriptedDeps.running always returns true")
+		}
+		return []behavior.Event{{Time: now, Tool: "codex", Entry: "cache-v2"}}
+	}
+	var buf bytes.Buffer
+	runWatch(&buf, false, monitor.DefaultThresholds(), deps)
+
+	out := buf.String()
+	want := `noticed: "cache-v2" appeared in ~/.codex while Codex was running`
+	if !strings.Contains(out, want) {
+		t.Errorf("missing behavior notice line, want to contain %q, got:\n%s", want, out)
+	}
+}
+
+// TestRunWatchNilObserveBehaviorIsSafe guards the "best-effort, never
+// disturbs the loop" promise for the case ProvenancePath failed at startup:
+// deps.observeBehavior is left nil, and the loop must run exactly as before.
+func TestRunWatchNilObserveBehaviorIsSafe(t *testing.T) {
+	deps, _ := scriptedDeps(t, []int64{0, 200 << 20, 400 << 20})
+	var buf bytes.Buffer
+	rec := runWatch(&buf, false, monitor.DefaultThresholds(), deps)
+	if rec.Action != "watch" {
+		t.Errorf("nil observeBehavior should not disturb the loop; receipt = %+v", rec)
+	}
 }
 
 func TestRunWatchBaselineHighWALNotifiesOnce(t *testing.T) {

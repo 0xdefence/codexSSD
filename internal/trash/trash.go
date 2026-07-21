@@ -17,20 +17,19 @@ import (
 // ErrUnsupported is returned on platforms without a known Trash location.
 var ErrUnsupported = errors.New("trash not supported on this platform")
 
-// Move moves path into the OS Trash.
-func Move(path string) error {
+// Move moves path into the OS Trash and reports the destination it landed at.
+func Move(path string) (dest string, err error) {
 	switch runtime.GOOS {
 	case "darwin":
 		dir, err := macTrashDir()
 		if err != nil {
-			return err
+			return "", err
 		}
-		_, err = moveInto(dir, path)
-		return err
+		return moveInto(dir, path)
 	case "linux":
 		return moveLinuxXDG(path)
 	default:
-		return ErrUnsupported
+		return "", ErrUnsupported
 	}
 }
 
@@ -57,29 +56,32 @@ func xdgTrashRoot() (string, error) {
 	return filepath.Join(home, ".local", "share", "Trash"), nil
 }
 
-func moveLinuxXDG(path string) error {
+func moveLinuxXDG(path string) (string, error) {
 	root, err := xdgTrashRoot()
 	if err != nil {
-		return err
+		return "", err
 	}
 	filesDir := filepath.Join(root, "files")
 	infoDir := filepath.Join(root, "info")
 	if err := os.MkdirAll(filesDir, 0o700); err != nil {
-		return err
+		return "", err
 	}
 	if err := os.MkdirAll(infoDir, 0o700); err != nil {
-		return err
+		return "", err
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return err
+		return "", err
 	}
 	target, err := moveInto(filesDir, path)
 	if err != nil {
-		return err
+		return "", err
 	}
 	info := fmt.Sprintf("[Trash Info]\nPath=%s\nDeletionDate=%s\n", abs, time.Now().Format("2006-01-02T15:04:05"))
-	return os.WriteFile(filepath.Join(infoDir, filepath.Base(target)+".trashinfo"), []byte(info), 0o600)
+	if err := os.WriteFile(filepath.Join(infoDir, filepath.Base(target)+".trashinfo"), []byte(info), 0o600); err != nil {
+		return "", err
+	}
+	return target, nil
 }
 
 // moveInto moves path into dir, choosing a collision-safe name. Returns the

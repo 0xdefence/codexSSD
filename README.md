@@ -36,8 +36,10 @@ about another tool near your machine. So trust is everything:
 - **It only ever moves files aside** (into a recycling bin) — it never
   hard-deletes. Permanent deletion always requires a separate, explicit action
   from you.
-- **The only files it may touch on its own are Codex's own known log files**
-  (`~/.codex/logs_2.sqlite*`). Never your project files.
+- **The only files it may touch on its own are a tool's own known files** —
+  Codex's log files (`~/.codex/logs_2.sqlite*`), or, when you opt into it with
+  `--tool claude`, Claude Code's own stale session files. Never your project
+  files.
 - **When it's uncertain whether something is junk, it reports — it never
   resolves.**
 - **It stays low-write and lightweight.** It deliberately uses a plain JSONL file
@@ -126,8 +128,9 @@ useful for scripts, cron jobs, and `--json` output.
 ### `status` — read-only report (touches nothing)
 
 ```bash
-codexssd status          # human-readable report of Codex's log files + total
-codexssd status --json   # the same report as JSON, for scripts/tooling
+codexssd status                  # human-readable report of Codex's log files + total
+codexssd status --json           # the same report as JSON, for scripts/tooling
+codexssd status --tool claude    # the same idea, for Claude Code
 ```
 
 Example:
@@ -146,12 +149,18 @@ Total:                        9.5 GiB
 If you don't have a `~/.codex` directory, `status` says so politely and exits
 cleanly — there's nothing to report.
 
+Every command that acts on or reports a tool's own files — `status`, `report`,
+`clean`, `restore`, `prune` — accepts `--tool codex|claude` (default `codex`).
+`watch` stays Codex-only for now. See
+[Beyond Codex: Claude Code](#beyond-codex-claude-code) below.
+
 ### `clean` — move logs aside (dry-run by default, never deletes)
 
 ```bash
-codexssd clean           # dry run — shows what would be moved, touches nothing
-codexssd clean --yes     # actually moves Codex's own logs to a recoverable bin
-codexssd clean --json    # dry-run output as JSON
+codexssd clean                  # dry run — shows what would be moved, touches nothing
+codexssd clean --yes            # actually moves Codex's own logs to a recoverable bin
+codexssd clean --json           # dry-run output as JSON
+codexssd clean --tool claude    # dry run for Claude Code's stale session files instead
 ```
 
 `clean` is **dry-run by default** — no files are touched until you pass `--yes`.
@@ -165,9 +174,10 @@ running processes first), so it will never race with an active agent session.
 ### `restore` — move cleaned logs back
 
 ```bash
-codexssd restore             # list recoverable backups
-codexssd restore <backup-id> # restore a specific backup to its original location
-codexssd restore --json      # list backups as JSON
+codexssd restore                    # list recoverable backups
+codexssd restore <backup-id>        # restore a specific backup to its original location
+codexssd restore --json             # list backups as JSON
+codexssd restore --tool claude      # list Claude Code's recoverable backups instead
 ```
 
 `restore` is the undo for `clean`. It moves the files back from the recycling
@@ -177,16 +187,35 @@ act if Codex is running.
 ### `report` — what's using disk inside `~/.codex` (read-only)
 
 ```bash
-codexssd report          # plain-language breakdown of everything in ~/.codex
-codexssd report --json   # the same report as JSON
+codexssd report                           # plain-language breakdown of everything in ~/.codex
+codexssd report --json                    # the same report as JSON
+codexssd report --tool claude             # the same idea, for Claude Code's directory
+codexssd report --tool claude --connections  # also probe whether each project folder is still connected
 ```
 
-Unlike `status` (which only looks at Codex's known log files), `report` walks
-the whole `~/.codex` directory and shows every entry's size, file count, and
-whether it looks stale (untouched for a while — configurable via
-`stale_after_days`). It flags CodexSSD's own recycling bin so you can tell it
-apart from Codex's data. It only ever reports — it never acts on anything
-outside Codex's own known log files.
+Unlike `status` (which only looks at a tool's own known files), `report` walks
+the whole tool directory (`~/.codex` by default) and shows every entry's size,
+file count, and whether it looks stale (untouched for a while — configurable
+via `stale_after_days`). It flags CodexSSD's own recycling bin so you can tell
+it apart from the tool's data. It only ever reports — it never acts on
+anything outside a tool's own known files.
+
+`--connections` adds a shallow connection probe (currently real for Claude
+Code only): for each project's session folder, it checks whether the source
+project it belongs to still exists on disk. Example:
+
+```
+Connections (shallow map — read-only):
+  -Users-you-code-my-app       74.6 MiB   connected — its project folder still exists on disk (/Users/you/code/my-app)
+  -Users-you-old-experiment    20.6 MiB   unknown — nothing obvious points here, but that is NOT proof it's safe; your call
+```
+
+The rule behind this section: **finding a connection is trustworthy; finding
+nothing is not.** A `connected` entry has real evidence behind it — leave it
+alone. An `unknown` entry just means CodexSSD didn't find anything obvious; it
+is not proof the entry is safe to remove, so it stays report-only, same as
+everything else. Running `report --connections` for Codex says outright that
+no probe exists for Codex yet, rather than silently showing nothing.
 
 ### `watch` — foreground monitor with warnings (read-only)
 
@@ -204,12 +233,21 @@ notifications are fire-and-forget and never block or fail the watch loop.
 On exit it writes one small session receipt to CodexSSD's own history; it
 never touches Codex's files.
 
+While watching, it also quietly notices any new entries that appear in
+`~/.codex` during the session ("I watched this get created while Codex was
+running" is a much stronger signal than guessing from a name) and remembers
+that — this is purely an observation, best-effort, and never touches those
+entries. `report` later mentions if something you're looking at showed up
+during a watched session. `watch` is Codex-only for now; it doesn't take
+`--tool`.
+
 ### `prune` — release expired recycling-bin backups to the Trash
 
 ```bash
-codexssd prune             # move backups past their ~2-week hold to the OS Trash
-codexssd prune --dry-run   # just list what would be released, touches nothing
-codexssd prune --json      # output as JSON
+codexssd prune                  # move backups past their ~2-week hold to the OS Trash
+codexssd prune --dry-run        # just list what would be released, touches nothing
+codexssd prune --json           # output as JSON
+codexssd prune --tool claude    # prune Claude Code's expired backups instead
 ```
 
 Backups moved aside by `clean --yes` are held for `bin_hold_days` (14 by
@@ -256,6 +294,34 @@ See the [MCP](#mcp) section below for what this exposes and how to wire it up.
 codexssd help        # list all commands
 codexssd <command> -h  # command-specific flags
 ```
+
+Running `codexssd` with no command at all launches a small interactive
+terminal app: a live view of Codex's log sizes with guided (confirm-first)
+`clean` and `restore` actions. It adds no file-mutating logic of its own — it's
+a thin layer over the same safety-tested engine used by the CLI commands
+above.
+
+## Beyond Codex: Claude Code
+
+CodexSSD started as a Codex-only tool, but the same safety-first approach now
+also covers Claude Code — just add `--tool claude` to `status`, `report`,
+`clean`, `restore`, or `prune`.
+
+Claude Code is different from Codex in one important way: Codex's log files
+are safe to move aside at any moment, but Claude Code's own recoverable data —
+session transcripts (`~/.claude/projects/<project>/<session>.jsonl`) and shell
+snapshots — is still doing a job while it's fresh: transcripts power `claude
+--resume`. To respect that, CodexSSD will only ever offer to move aside these
+files once they've gone stale (untouched for a while, same `stale_after_days`
+setting `report` uses). Fresh files are never even shown as candidates for
+cleaning, on purpose.
+
+A short list of Claude Code files are never touched, full stop, no matter how
+old they get — because they aren't clutter, they're your setup: your saved
+memory, `settings.json` / `settings.local.json`, `CLAUDE.md`, and anything
+under `plugins`, `agents`, `commands`, `skills`, `hooks`, or `todos`, plus
+`keybindings.json`. CodexSSD's per-tool rules always check this "never touch"
+list first, and it always wins.
 
 ## Configuration
 
@@ -319,11 +385,17 @@ claude mcp add codexssd -- codexssd mcp
 ## Roadmap status
 
 Phase 1 (the safe core: watch, warn, tidy Codex's own logs) is **complete**.
-Phase 2 (recycling-bin lifecycle + disk visibility) is **complete**, except
-for the deliberately deferred items noted in the spec (deep relationship
-mapping, behavioural detection, and support for other AI tools remain out of
-scope for now). See [`docs/roadmap.md`](docs/roadmap.md) for the full phase
-plan and [`docs/scope.md`](docs/scope.md) for the in/out line in the sand.
+Phase 2 (recycling-bin lifecycle + disk visibility) is **complete**, with the
+deliberate Phase-2-era narrowing that `report` covers `~/.codex` only, per the
+spec. Phase 3 (the shallow connection map) has **shipped** for Claude Code
+project folders — Codex entries have no probe yet and `report` says so
+outright. Phase 4 (multi-tool support + behavioural detection) has **partially
+shipped**: Claude Code now has full `status`/`report`/`clean`/`restore`/`prune`
+support, and `watch` records best-effort behavioural provenance for Codex.
+Deep relationship-mapping, Cursor/Gemini support, cost/token awareness, and
+daily/weekly summaries remain future work. See
+[`docs/roadmap.md`](docs/roadmap.md) for the full phase plan and
+[`docs/scope.md`](docs/scope.md) for the in/out line in the sand.
 
 ## Documentation
 
@@ -345,6 +417,7 @@ The full design spec lives in [`docs/`](docs/):
 ```
 cmd/codexssd/         CLI entry point + command dispatch
 internal/codex/       Codex paths, known log files, size reporting
+internal/tool/        per-tool Profiles (allow-lists, process detection): Codex + Claude Code
 internal/monitor/     watcher + risk engine
 internal/cleaner/     move-aside recycling-bin tidier
 internal/agent/       AGENTS.md "please behave" installer
@@ -352,6 +425,8 @@ internal/recorder/    JSONL session history, no database
 internal/self/        CodexSSD's own-footprint self-report
 internal/config/      ~/.codexssd/config.json loader (never bricks the tool)
 internal/visibility/  `report`'s ~/.codex disk-usage scan
+internal/shallowmap/  `report --connections`' shallow probe (Phase 3)
+internal/behavior/    `watch`'s best-effort behavioral provenance recorder (Phase 4)
 internal/notify/      best-effort desktop notifications for `watch`
 internal/mcpserver/   read-only MCP server (stdio) for `mcp`
 internal/tui/         interactive dashboard (bare `codexssd`)

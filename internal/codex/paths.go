@@ -11,7 +11,7 @@ import (
 )
 
 // DirName is the directory Codex uses under the user's home directory.
-const DirName = ".codex"
+const DirName = ".codex" // must match tool.Codex().DirName
 
 // Dir returns the absolute path to the user's ~/.codex directory.
 //
