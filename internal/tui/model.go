@@ -17,6 +17,8 @@ import (
 	"github.com/0xdefence/codexssd/internal/config"
 	"github.com/0xdefence/codexssd/internal/monitor"
 	"github.com/0xdefence/codexssd/internal/recorder"
+	"github.com/0xdefence/codexssd/internal/self"
+	"github.com/0xdefence/codexssd/internal/visibility"
 )
 
 // deadweightThreshold is the total Codex-log size at or above which the
@@ -42,6 +44,7 @@ const (
 	stateResult
 	stateBlocked
 	stateError
+	stateInfo
 )
 
 // Model is the whole application state. Fields beyond the skeleton are populated
@@ -81,6 +84,12 @@ type Model struct {
 	resultErr     error  // error on the result screen
 	blockedReason string // why an action was refused
 	releaseNote   string // note shown after an auto-release on start
+
+	// info screen (populated lazily by infoCmd when the screen is entered)
+	infoLoaded bool
+	selfReport self.Report
+	selfErr    error
+	diskReport visibility.Report
 }
 
 // New returns the initial model configured with cfg.

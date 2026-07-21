@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -51,6 +52,8 @@ func (m Model) View() string {
 		return m.renderResult()
 	case stateBlocked:
 		return m.renderBlocked()
+	case stateInfo:
+		return m.renderInfo()
 	default:
 		return m.renderDashboard()
 	}
@@ -91,9 +94,12 @@ func (m Model) renderDashboard() string {
 	if lvl >= monitor.RiskMedium {
 		reason := ""
 		if len(m.assessment.Reasons) > 0 {
-			reason = " · " + m.assessment.Reasons[0]
+			reason = " · " + strings.Join(m.assessment.Reasons, " · ")
 		}
 		fmt.Fprintf(&risk, "%.0f MB/min · WAL %s%s\n", m.assessment.RateMBPerMin, codex.HumanBytes(m.assessment.WALBytes), reason)
+	}
+	if !m.startedAt.IsZero() {
+		fmt.Fprintf(&risk, "session peak: %s · %.0f MB/min\n", m.peakRisk.String(), m.peakRate)
 	}
 	switch {
 	case !m.supported:
@@ -142,12 +148,26 @@ func (m Model) renderDashboard() string {
 		sections = append(sections, mutedTextStyle.Render(m.releaseNote))
 	}
 
-	sections = append(sections, "", statusBar(m.footer(), "watching ~/.codex · updates every 30s", w))
+	sections = append(sections, "", statusBar(m.footer(), "watching ~/.codex · updates every "+friendlyInterval(m.cfg.PollInterval()), w))
 	return strings.Join(sections, "\n")
 }
 
 func (m Model) footer() string {
-	return "c tidy · r restore · ? help · q quit"
+	return "c tidy · r restore · i info · ? help · q quit"
+}
+
+// friendlyInterval formats a poll interval the way a non-technical user reads
+// it: whole seconds under a minute as "30s", whole minutes as "1m", otherwise
+// falling back to Duration's own String() (e.g. "1m30s").
+func friendlyInterval(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d/time.Second))
+	case d%time.Minute == 0:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	default:
+		return d.String()
+	}
 }
 
 // screen frames a secondary view: compact logo header, an accent-titled card,
@@ -214,8 +234,95 @@ func (m Model) renderHelp() string {
 	body := strings.Join([]string{
 		"c    tidy Codex's logs aside (recoverable)",
 		"r    restore previously tidied logs",
+		"i    open the info screen (settings, self-footprint, disk report)",
 		"?    toggle this help",
 		"q    quit",
 	}, "\n")
 	return m.screen("CodexSSD — help", body, "? or esc to close")
+}
+
+// renderInfo shows the read-only Info screen: configured settings, CodexSSD's
+// own footprint, and a full ~/.codex disk breakdown. Data is fetched lazily by
+// infoCmd when the screen is entered; until it arrives, this shows "loading…"
+// (same pattern as renderWorking).
+func (m Model) renderInfo() string {
+	w := effectiveWidth(m)
+	if !m.infoLoaded {
+		return strings.Join([]string{
+			renderCompactLogo(w),
+			"",
+			panel("CodexSSD — info", "loading…", w),
+			"",
+			statusBar("esc back", "watching ~/.codex", w),
+		}, "\n")
+	}
+
+	var settings strings.Builder
+	fmt.Fprintf(&settings, "risk thresholds (MB/min)   medium %.0f · high %.0f · critical %.0f\n",
+		m.cfg.MediumMBPerMin, m.cfg.HighMBPerMin, m.cfg.CriticalMBPerMin)
+	fmt.Fprintf(&settings, "WAL size thresholds (MiB)  high %d · critical %d\n",
+		m.cfg.HighWALSizeMB, m.cfg.CriticalWALSizeMB)
+	fmt.Fprintf(&settings, "memory thresholds (MiB)    high %d · critical %d\n",
+		m.cfg.HighMemMB, m.cfg.CriticalMemMB)
+	fmt.Fprintf(&settings, "poll interval (seconds)    %d\n", m.cfg.PollIntervalSeconds)
+	fmt.Fprintf(&settings, "recycling-bin hold (days)  %d\n", m.cfg.BinHoldDays)
+	fmt.Fprintf(&settings, "stale after (days)         %d\n", m.cfg.StaleAfterDays)
+	fmt.Fprintf(&settings, "notifications              %s", onOff(m.cfg.Notifications))
+
+	var foot strings.Builder
+	if m.selfErr != nil {
+		fmt.Fprintf(&foot, "Could not measure CodexSSD's own footprint: %v", m.selfErr)
+	} else {
+		fmt.Fprintf(&foot, "mode          %s\n", m.selfReport.Mode)
+		fmt.Fprintf(&foot, "state dir     %s\n", m.selfReport.StateDir)
+		fmt.Fprintf(&foot, "history size  %s\n", codex.HumanBytes(m.selfReport.HistoryBytes))
+		fmt.Fprintf(&foot, "records       %d\n", m.selfReport.Records)
+		lastAction := m.selfReport.LastAction
+		if lastAction == "" {
+			lastAction = "(none yet)"
+		}
+		fmt.Fprintf(&foot, "last action   %s", lastAction)
+	}
+
+	var disk strings.Builder
+	switch {
+	case !m.diskReport.DirExists:
+		fmt.Fprint(&disk, "~/.codex was not found — Codex may not have run yet.")
+	case len(m.diskReport.Entries) == 0:
+		fmt.Fprint(&disk, "(empty)")
+	default:
+		for i, e := range m.diskReport.Entries {
+			if i > 0 {
+				disk.WriteString("\n")
+			}
+			flags := ""
+			if e.Stale {
+				flags += " STALE"
+			}
+			if e.ReadError != "" {
+				flags += " ⚠"
+			}
+			fmt.Fprintf(&disk, "%-24s %10s  %4d files  %s%s",
+				e.Name, codex.HumanBytes(e.TotalBytes), e.FileCount, e.NewestMod.Format("2006-01-02"), flags)
+		}
+		fmt.Fprintf(&disk, "\nTotal %s", codex.HumanBytes(m.diskReport.TotalBytes))
+	}
+
+	sections := []string{
+		renderCompactLogo(w), "",
+		panel("Settings", settings.String(), w), "",
+		panel("CodexSSD's own footprint", foot.String(), w), "",
+		panel("Disk report (~/.codex)", disk.String(), w), "",
+		statusBar("esc back", "watching ~/.codex", w),
+	}
+	return strings.Join(sections, "\n")
+}
+
+// onOff renders a bool as the plain-language settings words a non-technical
+// user reads, rather than "true"/"false".
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }

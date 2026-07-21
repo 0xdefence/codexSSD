@@ -8,7 +8,11 @@ import (
 
 	"github.com/0xdefence/codexssd/internal/cleaner"
 	"github.com/0xdefence/codexssd/internal/codex"
+	"github.com/0xdefence/codexssd/internal/monitor"
+	"github.com/0xdefence/codexssd/internal/notify"
 	"github.com/0xdefence/codexssd/internal/recorder"
+	"github.com/0xdefence/codexssd/internal/self"
+	"github.com/0xdefence/codexssd/internal/visibility"
 )
 
 // Engine seams. They default to the real engine functions and are overridden in
@@ -30,6 +34,16 @@ var (
 	// appendReceipt records a session receipt. The TUI has no stderr channel
 	// worth interrupting for, so callers ignore the error entirely.
 	appendReceipt = recorder.Append
+	// recorderStateDir resolves CodexSSD's own state dir (~/.codexssd), the
+	// input to self.Measure.
+	recorderStateDir = recorder.Dir
+	// measureSelf and scanVisibility back the Info screen; overridden in tests
+	// with t.TempDir()-backed fakes so no real ~/.codex or ~/.codexssd is touched.
+	measureSelf    = self.Measure
+	scanVisibility = visibility.Scan
+	// notifyFn fires a desktop notification. Overridden in tests so no real
+	// notification UI is ever spawned.
+	notifyFn = notify.Notify
 )
 
 // cleanResultMsg reports the outcome of a tidy.
@@ -179,4 +193,62 @@ type tickMsg struct{}
 // tickCmd schedules the next poll tick after interval.
 func tickCmd(interval time.Duration) tea.Cmd {
 	return tea.Tick(interval, func(time.Time) tea.Msg { return tickMsg{} })
+}
+
+// infoMsg carries the Info screen's snapshot: CodexSSD's own footprint and the
+// ~/.codex disk breakdown. Both come from already-tested, read-only packages —
+// this just wires them into the TUI.
+type infoMsg struct {
+	self    self.Report
+	selfErr error
+	disk    visibility.Report
+}
+
+// infoCmd gathers the Info screen's snapshot (100% read-only): CodexSSD's own
+// footprint via self.Measure(recorder.Dir()), and a full ~/.codex disk
+// breakdown via visibility.Scan. staleAfter comes straight from config so the
+// disk report's STALE flags match the same threshold the rest of the tool uses.
+func infoCmd(staleAfter time.Duration) tea.Cmd {
+	return func() tea.Msg {
+		var rep self.Report
+		var selfErr error
+		if stateDir, err := recorderStateDir(); err != nil {
+			selfErr = err
+		} else {
+			rep, selfErr = measureSelf(stateDir)
+		}
+
+		var disk visibility.Report
+		if dir, err := codexDir(); err == nil {
+			disk = scanVisibility(dir, time.Now(), staleAfter)
+		}
+
+		return infoMsg{self: rep, selfErr: selfErr, disk: disk}
+	}
+}
+
+// escalatedToAlarming reports whether risk just crossed up into HIGH/CRITICAL
+// territory — the exact escalation condition cmd/codexssd/watch.go uses
+// (a.Level >= monitor.RiskHigh && a.Level > last), promoted to a pure function
+// so it is testable without a fake notification channel.
+func escalatedToAlarming(last, current monitor.Risk) bool {
+	return current >= monitor.RiskHigh && current > last
+}
+
+// notifyCmd fires a best-effort desktop notification about an escalated risk
+// assessment. CLAUDE.md safety rule 6: notifications are fire-and-forget — a
+// failure or delay here must never block, slow, or fail the dashboard's render
+// loop, so this spawns its own goroutine and discards the result unconditionally
+// (any error, including notify.ErrUnsupported, is swallowed — same as watch.go).
+func notifyCmd(a monitor.Assessment) tea.Cmd {
+	return func() tea.Msg {
+		go func() {
+			body := "Codex disk/memory activity looks alarming."
+			if len(a.Reasons) > 0 {
+				body = a.Reasons[0]
+			}
+			_ = notifyFn("CodexSSD: "+a.Level.String(), body)
+		}()
+		return nil
+	}
 }

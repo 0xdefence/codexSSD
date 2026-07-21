@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,10 @@ import (
 	"github.com/0xdefence/codexssd/internal/codex"
 	"github.com/0xdefence/codexssd/internal/config"
 	"github.com/0xdefence/codexssd/internal/monitor"
+	"github.com/0xdefence/codexssd/internal/notify"
 	"github.com/0xdefence/codexssd/internal/recorder"
+	"github.com/0xdefence/codexssd/internal/self"
+	"github.com/0xdefence/codexssd/internal/visibility"
 )
 
 // key builds a KeyMsg for a single key like "q", "?", "enter", "esc", "up".
@@ -440,5 +444,223 @@ func TestHighRiskDrivesActionableBanner(t *testing.T) {
 	}
 	if m.bannerState() != bannerActionable {
 		t.Errorf("high risk + idle should be actionable, got %v", m.bannerState())
+	}
+}
+
+// --- Info screen: navigation ---
+
+func TestInfoKeyOpensInfoScreenAndDispatchesInfoCmd(t *testing.T) {
+	m, _ := step(New(config.Default()), sampleLoaded())
+	m, cmd := step(m, key("i"))
+	if m.state != stateInfo {
+		t.Fatalf("state = %v, want stateInfo", m.state)
+	}
+	if m.infoLoaded {
+		t.Error("infoLoaded should start false when the info screen is entered")
+	}
+	if cmd == nil {
+		t.Fatal("pressing i should dispatch infoCmd")
+	}
+}
+
+func TestInfoMsgPopulatesScreenAndSetsLoaded(t *testing.T) {
+	m, _ := step(New(config.Default()), sampleLoaded())
+	m, _ = step(m, key("i"))
+
+	rep := self.Report{Mode: "low-write", StateDir: "/home/u/.codexssd", HistoryBytes: 512, Records: 2, LastAction: "restore"}
+	disk := visibility.Report{Dir: "/home/u/.codex", DirExists: true, Entries: []visibility.Entry{}}
+	m, cmd := step(m, infoMsg{self: rep, disk: disk})
+
+	if !m.infoLoaded {
+		t.Fatal("infoLoaded should be true after infoMsg")
+	}
+	if m.selfReport != rep {
+		t.Errorf("selfReport = %+v, want %+v", m.selfReport, rep)
+	}
+	if m.diskReport.Dir != disk.Dir {
+		t.Errorf("diskReport.Dir = %q, want %q", m.diskReport.Dir, disk.Dir)
+	}
+	if cmd != nil {
+		t.Error("infoMsg should not itself dispatch another command")
+	}
+}
+
+func TestInfoEscReturnsToDashboardAndReloads(t *testing.T) {
+	m, _ := step(New(config.Default()), sampleLoaded())
+	m, _ = step(m, key("i"))
+	m, cmd := step(m, key("esc"))
+	if m.state != stateDashboard {
+		t.Fatalf("state = %v, want stateDashboard", m.state)
+	}
+	if cmd == nil {
+		t.Error("esc from the info screen should trigger a reload (loadCmd)")
+	}
+}
+
+// --- Info screen: infoCmd against seams (no real ~/.codex or ~/.codexssd touched) ---
+
+func TestInfoCmdGathersSelfAndDiskReports(t *testing.T) {
+	origState, origCodexDir := recorderStateDir, codexDir
+	t.Cleanup(func() { recorderStateDir, codexDir = origState, origCodexDir })
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, recorder.FileName), make([]byte, 10), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recorderStateDir = func() (string, error) { return stateDir, nil }
+
+	codexD := t.TempDir()
+	if err := os.WriteFile(filepath.Join(codexD, "logs_2.sqlite"), make([]byte, 128), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	codexDir = func() (string, error) { return codexD, nil }
+
+	msg := infoCmd(30 * 24 * time.Hour)()
+	got, ok := msg.(infoMsg)
+	if !ok {
+		t.Fatalf("infoCmd returned %T, want infoMsg", msg)
+	}
+	if got.selfErr != nil {
+		t.Fatalf("selfErr = %v, want nil", got.selfErr)
+	}
+	if got.self.StateDir != stateDir {
+		t.Errorf("self.StateDir = %q, want %q", got.self.StateDir, stateDir)
+	}
+	if got.self.HistoryBytes != 10 {
+		t.Errorf("self.HistoryBytes = %d, want 10", got.self.HistoryBytes)
+	}
+	if !got.disk.DirExists {
+		t.Error("disk.DirExists should be true")
+	}
+	if got.disk.TotalBytes != 128 {
+		t.Errorf("disk.TotalBytes = %d, want 128", got.disk.TotalBytes)
+	}
+}
+
+func TestInfoCmdSurfacesRecorderDirError(t *testing.T) {
+	origState := recorderStateDir
+	t.Cleanup(func() { recorderStateDir = origState })
+
+	wantErr := errors.New("no home dir")
+	recorderStateDir = func() (string, error) { return "", wantErr }
+
+	msg := infoCmd(time.Hour)()
+	got, ok := msg.(infoMsg)
+	if !ok {
+		t.Fatalf("infoCmd returned %T, want infoMsg", msg)
+	}
+	if !errors.Is(got.selfErr, wantErr) {
+		t.Errorf("selfErr = %v, want %v", got.selfErr, wantErr)
+	}
+}
+
+// --- Notifications: escalation logic and firing ---
+
+func TestEscalatedToAlarming(t *testing.T) {
+	cases := []struct {
+		name          string
+		last, current monitor.Risk
+		want          bool
+	}{
+		{"low to medium is not alarming", monitor.RiskLow, monitor.RiskMedium, false},
+		{"low to high is an escalation", monitor.RiskLow, monitor.RiskHigh, true},
+		{"low to critical is an escalation", monitor.RiskLow, monitor.RiskCritical, true},
+		{"medium to high is an escalation", monitor.RiskMedium, monitor.RiskHigh, true},
+		{"high to critical is an escalation", monitor.RiskHigh, monitor.RiskCritical, true},
+		{"high to high (no change) is not alarming", monitor.RiskHigh, monitor.RiskHigh, false},
+		{"critical to high (de-escalation) is not alarming", monitor.RiskCritical, monitor.RiskHigh, false},
+		{"critical to low (de-escalation) is not alarming", monitor.RiskCritical, monitor.RiskLow, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := escalatedToAlarming(c.last, c.current); got != c.want {
+				t.Errorf("escalatedToAlarming(%v, %v) = %v, want %v", c.last, c.current, got, c.want)
+			}
+		})
+	}
+}
+
+func TestLoadedMsgDispatchesNotifyCmdOnEscalation(t *testing.T) {
+	origNotify := notifyFn
+	t.Cleanup(func() { notifyFn = origNotify })
+
+	called := make(chan struct{}, 1)
+	notifyFn = func(title, body string) error { called <- struct{}{}; return nil }
+
+	base := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	m := New(config.Default())
+	m, _ = step(m, loadedAt(base, 10*1024*1024)) // baseline: LOW
+	m, cmd := step(m, loadedAt(base.Add(time.Minute), 610*1024*1024))
+
+	if m.assessment.Level != monitor.RiskCritical {
+		t.Fatalf("assessment level = %v, want RiskCritical (precondition for this test)", m.assessment.Level)
+	}
+	if cmd == nil {
+		t.Fatal("escalation into CRITICAL should dispatch a notify command")
+	}
+	cmd() // run the returned tea.Cmd, which fires notifyFn in its own goroutine
+
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("notifyFn was never invoked by the dispatched command")
+	}
+}
+
+func TestLoadedMsgNoNotifyCmdWithoutEscalation(t *testing.T) {
+	origNotify := notifyFn
+	t.Cleanup(func() { notifyFn = origNotify })
+	notifyFn = func(string, string) error { t.Error("notifyFn should not be called"); return nil }
+
+	base := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	m := New(config.Default())
+	// Flat, low-activity samples: never crosses into HIGH/CRITICAL.
+	m, cmd := step(m, loadedAt(base, 10*1024*1024))
+	if cmd != nil {
+		t.Error("the baseline load should not dispatch a notify command")
+	}
+	m, cmd = step(m, loadedAt(base.Add(time.Minute), 11*1024*1024))
+	if cmd != nil {
+		t.Error("a quiet load should not dispatch a notify command")
+	}
+}
+
+func TestLoadedMsgNoNotifyCmdWhenConfigDisabled(t *testing.T) {
+	origNotify := notifyFn
+	t.Cleanup(func() { notifyFn = origNotify })
+	notifyFn = func(string, string) error {
+		t.Error("notifyFn should not be called when notifications are disabled")
+		return nil
+	}
+
+	cfg := config.Default()
+	cfg.Notifications = false
+	base := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	m := New(cfg)
+	m, _ = step(m, loadedAt(base, 10*1024*1024))
+	m, cmd := step(m, loadedAt(base.Add(time.Minute), 610*1024*1024))
+	if m.assessment.Level != monitor.RiskCritical {
+		t.Fatalf("assessment level = %v, want RiskCritical (precondition for this test)", m.assessment.Level)
+	}
+	if cmd != nil {
+		t.Error("notifications disabled in config: loadedMsg should not dispatch a notify command")
+	}
+}
+
+func TestNotifyCmdSwallowsErrorsIncludingUnsupported(t *testing.T) {
+	origNotify := notifyFn
+	t.Cleanup(func() { notifyFn = origNotify })
+
+	done := make(chan struct{}, 1)
+	notifyFn = func(title, body string) error { done <- struct{}{}; return notify.ErrUnsupported }
+
+	cmd := notifyCmd(monitor.Assessment{Level: monitor.RiskHigh, Reasons: []string{"writing 200 MB/min"}})
+	if msg := cmd(); msg != nil {
+		t.Errorf("notifyCmd's returned message should be nil (discarded), got %v", msg)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("notifyFn was not invoked")
 	}
 }
