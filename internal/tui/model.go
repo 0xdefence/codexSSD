@@ -18,6 +18,7 @@ import (
 	"github.com/0xdefence/codexssd/internal/monitor"
 	"github.com/0xdefence/codexssd/internal/recorder"
 	"github.com/0xdefence/codexssd/internal/self"
+	"github.com/0xdefence/codexssd/internal/tool"
 	"github.com/0xdefence/codexssd/internal/visibility"
 )
 
@@ -45,6 +46,10 @@ const (
 	stateBlocked
 	stateError
 	stateInfo
+	stateClaude
+	stateClaudeConfirmClean
+	stateClaudeRestoreList
+	stateClaudeConfirmRestore
 )
 
 // Model is the whole application state. Fields beyond the skeleton are populated
@@ -66,6 +71,27 @@ type Model struct {
 	backups   []cleaner.Backup
 	memBytes  int64           // total Codex RSS (0 when unknown)
 	processes []codex.Process // running Codex-like processes (empty when none/unknown)
+
+	// Claude Code status (populated by loadClaudeCmd), a parallel set of fields
+	// alongside the Codex ones above — the Codex fields are never touched by
+	// Claude-side loading/actions, and vice versa.
+	claudeDir       string
+	claudeLoadErr   error
+	claudeRunning   bool
+	claudeSupported bool
+	claudeRunErr    error
+	claudeProcesses []tool.Process
+	claudeCleanable []tool.FoundFile
+	claudePlan      cleaner.Plan
+	claudeBackups   []cleaner.Backup
+
+	// returnState/workingLabel generalize the shared "please wait"/result/
+	// blocked screens across both tools: set immediately before every
+	// clean/restore dispatch so those screens know whether esc/enter goes back
+	// to stateDashboard (+ loadCmd) or stateClaude (+ loadClaudeCmd), and what
+	// the working screen's label should read while the action is in flight.
+	returnState  state
+	workingLabel string
 
 	// monitor (write-activity risk)
 	samples    []monitor.Sample
@@ -91,6 +117,12 @@ type Model struct {
 	selfReport self.Report
 	selfErr    error
 	diskReport visibility.Report
+
+	// claudeLoaded gates the Claude screen's "loading…" state, same pattern as
+	// infoLoaded: pressing l dispatches a fresh loadClaudeCmd and this is reset
+	// to false until loadedClaudeMsg arrives, so the detail screen is never
+	// stale relative to when it was opened.
+	claudeLoaded bool
 }
 
 // New returns the initial model configured with cfg.
@@ -100,7 +132,7 @@ func New(cfg config.Config) Model {
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(loadCmd, tickCmd(m.cfg.PollInterval()), releaseCmd)
+	return tea.Batch(loadCmd, loadClaudeCmd(m.cfg.StaleAfter()), tickCmd(m.cfg.PollInterval()), releaseCmd)
 }
 
 // deadweight reports whether the Codex logs are large enough to emphasize.
@@ -136,10 +168,24 @@ func (m Model) sessionReceipt(now time.Time) recorder.Receipt {
 }
 
 // lastTidy returns the most recent backup time, if any backups exist.
-func (m Model) lastTidy() (time.Time, bool) {
+func (m Model) lastTidy() (time.Time, bool) { return lastTidyOf(m.backups) }
+
+// soonestRelease returns the earliest upcoming backup release time, if any.
+func (m Model) soonestRelease() (time.Time, bool) { return soonestReleaseOf(m.backups) }
+
+// claudeLastTidy is lastTidy's Claude-backup counterpart.
+func (m Model) claudeLastTidy() (time.Time, bool) { return lastTidyOf(m.claudeBackups) }
+
+// claudeSoonestRelease is soonestRelease's Claude-backup counterpart.
+func (m Model) claudeSoonestRelease() (time.Time, bool) { return soonestReleaseOf(m.claudeBackups) }
+
+// lastTidyOf returns the most recent backup time in backups, if any exist.
+// Shared by lastTidy/claudeLastTidy so the two tools' recycling-bin summaries
+// stay byte-identical in behavior.
+func lastTidyOf(backups []cleaner.Backup) (time.Time, bool) {
 	var newest time.Time
 	found := false
-	for _, b := range m.backups {
+	for _, b := range backups {
 		if b.Manifest.MovedAt.After(newest) {
 			newest = b.Manifest.MovedAt
 			found = true
@@ -148,11 +194,12 @@ func (m Model) lastTidy() (time.Time, bool) {
 	return newest, found
 }
 
-// soonestRelease returns the earliest upcoming backup release time, if any.
-func (m Model) soonestRelease() (time.Time, bool) {
+// soonestReleaseOf returns the earliest upcoming release time in backups, if
+// any exist. Shared by soonestRelease/claudeSoonestRelease.
+func soonestReleaseOf(backups []cleaner.Backup) (time.Time, bool) {
 	var soonest time.Time
 	found := false
-	for _, b := range m.backups {
+	for _, b := range backups {
 		if !found || b.Manifest.HoldUntil.Before(soonest) {
 			soonest = b.Manifest.HoldUntil
 			found = true
