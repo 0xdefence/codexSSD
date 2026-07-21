@@ -61,7 +61,8 @@ Build a local binary:
 git clone https://github.com/0xdefence/codexSSD.git
 cd codexSSD
 go build -o codexssd ./cmd/codexssd
-./codexssd status
+./codexssd            # opens the interactive dashboard
+./codexssd status     # or run a specific command
 ```
 
 Or run without building:
@@ -79,7 +80,48 @@ go install github.com/0xdefence/codexssd/cmd/codexssd@latest
 > The display name is **CodexSSD**; the module, binary, and command are the
 > lowercase `codexssd` (Go module paths are conventionally lowercase).
 
-## Usage (today)
+## Usage
+
+### Bare `codexssd` — the interactive dashboard (start here)
+
+```bash
+codexssd   # opens the interactive terminal dashboard
+```
+
+Running `codexssd` with no command launches the interactive terminal app — the
+easiest way to use the tool day to day. It's a thin layer over the same
+safety-tested engine the CLI commands use; it adds no file-mutating logic of
+its own.
+
+The dashboard shows, refreshed on a timer (30 seconds by default — the same
+`poll_interval_seconds` config `watch` uses; always read-only):
+
+- **Codex folder** — Codex's log files and their sizes, with a total.
+- **Risk** — the current write-activity risk level (with rate and WAL size when
+  elevated), whether Codex is running, and its memory use when it is.
+- **Recycling bin** — how many backups you have, when you last tidied, and when
+  the next backup is due for release.
+- A plain-language banner: quiet when nothing is alarming, and a nudge to press
+  `c` when logs have piled up (100 MiB or more).
+
+Keys:
+
+| Key | Action |
+| --- | ------ |
+| `c` | Tidy Codex's logs aside into the recoverable recycling bin (asks `y`/`n` first) |
+| `r` | Restore a previously tidied backup (pick with `↑`/`↓`, confirm with `y`/`n`) |
+| `?` | Toggle help |
+| `q` / `Ctrl-C` | Quit |
+
+The same safety rules apply as everywhere else: every action asks for
+confirmation first, nothing is ever deleted (files only move to the recycling
+bin), and tidying or restoring is refused while Codex is running. On launch the
+dashboard also releases any backups past their hold to the OS Trash (the same
+thing `prune` does) and tells you when it did. On quit it writes one small
+session receipt to CodexSSD's own JSONL history.
+
+Everything the dashboard does is also available as plain CLI commands, below —
+useful for scripts, cron jobs, and `--json` output.
 
 ### `status` — read-only report (touches nothing)
 
@@ -208,17 +250,12 @@ codexssd mcp   # serve five read-only tools over stdio (MCP)
 
 See the [MCP](#mcp) section below for what this exposes and how to wire it up.
 
-### Bare `codexssd` — the interactive dashboard
+### Getting help
 
 ```bash
-codexssd   # opens an interactive terminal dashboard
+codexssd help        # list all commands
+codexssd <command> -h  # command-specific flags
 ```
-
-Running `codexssd` with no command at all launches a small interactive
-terminal app: a live view of Codex's log sizes with guided (confirm-first)
-`clean` and `restore` actions. It adds no file-mutating logic of its own — it's
-a thin layer over the same safety-tested engine used by the CLI commands
-above.
 
 ## Configuration
 
