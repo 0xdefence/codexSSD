@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/0xdefence/codexssd/internal/cleaner"
+	"github.com/0xdefence/codexssd/internal/codex"
 	"github.com/0xdefence/codexssd/internal/config"
 	"github.com/0xdefence/codexssd/internal/monitor"
 	"github.com/0xdefence/codexssd/internal/self"
@@ -87,6 +89,78 @@ func TestRestoreListHighlightsSelection(t *testing.T) {
 	}
 	if !strings.Contains(out, "choose") {
 		t.Errorf("restore list should show its keys; got:\n%s", out)
+	}
+}
+
+// TestConfirmRestoreShowsOriginalPaths guards Component 2: the Confirm Restore
+// screen must list every backed-up file's OriginalPath underneath the
+// confirmation question, not just the backup id.
+func TestConfirmRestoreShowsOriginalPaths(t *testing.T) {
+	msg := sampleLoaded()
+	msg.backups = []cleaner.Backup{{
+		Dir: "/home/u/.codex/codexssd-backups/20260601-000000",
+		Manifest: cleaner.Manifest{
+			Items: []cleaner.ManifestItem{
+				{Name: "logs_2.sqlite", OriginalPath: "/Users/you/.codex/logs_2.sqlite", Size: 6 * 1024 * 1024},
+				{Name: "logs_2.sqlite-wal", OriginalPath: "/Users/you/.codex/logs_2.sqlite-wal", Size: 1024 * 1024},
+			},
+		},
+	}}
+	m, _ := step(New(config.Default()), msg)
+	m.width = 90
+	m.state = stateConfirmRestore
+	m.selected = 0
+	out := m.View()
+	for _, want := range []string{
+		"20260601-000000",
+		"/Users/you/.codex/logs_2.sqlite",
+		"/Users/you/.codex/logs_2.sqlite-wal",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("confirm restore screen missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
+// TestDashboardShowsProcessDetailWhenPopulated guards Component 1: once the
+// dashboard has PIDs, "Codex: running" gains PID detail — singular phrasing
+// for one process, plural with all PIDs for multiple.
+func TestDashboardShowsProcessDetailWhenPopulated(t *testing.T) {
+	msg := sampleLoaded()
+	msg.running = true
+	msg.processes = []codex.Process{{PID: 1234, Name: "codex"}}
+	m, _ := step(New(config.Default()), msg)
+	m.width = 100
+	out := m.View()
+	if !strings.Contains(out, "Codex: running (PID 1234)") {
+		t.Errorf("dashboard missing singular PID detail; got:\n%s", out)
+	}
+
+	msg.processes = []codex.Process{{PID: 1234, Name: "codex"}, {PID: 5678, Name: "codex"}}
+	m, _ = step(New(config.Default()), msg)
+	m.width = 100
+	out = m.View()
+	if !strings.Contains(out, "Codex: running (2 processes, PIDs 1234, 5678)") {
+		t.Errorf("dashboard missing plural PID detail; got:\n%s", out)
+	}
+}
+
+// TestDashboardFallsBackWhenRunningButNoProcesses guards the race described in
+// the design spec: running == true but the independent process read came back
+// empty must never render an inconsistent/alarming state — fall back to the
+// plain "Codex: running" text.
+func TestDashboardFallsBackWhenRunningButNoProcesses(t *testing.T) {
+	msg := sampleLoaded()
+	msg.running = true
+	msg.processes = nil
+	m, _ := step(New(config.Default()), msg)
+	m.width = 100
+	out := m.View()
+	if !strings.Contains(out, "Codex: running") {
+		t.Errorf("dashboard should fall back to plain running text; got:\n%s", out)
+	}
+	if strings.Contains(out, "PID") {
+		t.Errorf("dashboard should not mention PIDs when the process list is empty; got:\n%s", out)
 	}
 }
 

@@ -46,7 +46,8 @@ func TestMoveSendsToOSTrash(t *testing.T) {
 	if err := os.WriteFile(src, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Move(src); err != nil {
+	dest, err := Move(src)
+	if err != nil {
 		t.Fatalf("Move: %v", err)
 	}
 	if _, err := os.Stat(src); !os.IsNotExist(err) {
@@ -57,6 +58,9 @@ func TestMoveSendsToOSTrash(t *testing.T) {
 		landed = filepath.Join(home, ".Trash", "logs_2.sqlite")
 	} else {
 		landed = filepath.Join(home, "xdg", "Trash", "files", "logs_2.sqlite")
+	}
+	if dest != landed {
+		t.Errorf("Move dest = %q, want %q", dest, landed)
 	}
 	if _, err := os.Stat(landed); err != nil {
 		t.Errorf("expected file in trash at %s: %v", landed, err)

@@ -26,6 +26,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.plan = msg.plan
 		m.backups = msg.backups
 		m.memBytes = msg.memBytes
+		m.processes = msg.processes
 		// Capture the previously-displayed level before it's overwritten below —
 		// this is the only place old and new assessments are both in scope, so
 		// the escalation check (for the notification) happens right here.
@@ -81,7 +82,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case releasedMsg:
 		if len(msg.ids) > 0 {
-			m.releaseNote = fmt.Sprintf("Released %d old backup(s) to the Trash.", len(msg.ids))
+			m.releaseNote = fmt.Sprintf("released %d backup(s)", len(msg.ids))
+			if msg.trashDir != "" {
+				m.releaseNote += " → " + shortenHome(msg.trashDir)
+			}
 		}
 		return m, loadCmd // refresh the backups list after releasing
 	case blockedMsg:
