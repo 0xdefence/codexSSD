@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -104,6 +105,8 @@ func (m Model) renderDashboard() string {
 	switch {
 	case !m.supported:
 		fmt.Fprint(&risk, "Codex: can't check")
+	case m.running && len(m.processes) > 0:
+		fmt.Fprint(&risk, formatRunningProcesses(m.processes))
 	case m.running:
 		fmt.Fprint(&risk, "Codex: running")
 	default:
@@ -150,6 +153,21 @@ func (m Model) renderDashboard() string {
 
 	sections = append(sections, "", statusBar(m.footer(), "watching ~/.codex · updates every "+friendlyInterval(m.cfg.PollInterval()), w))
 	return strings.Join(sections, "\n")
+}
+
+// formatRunningProcesses renders the "Codex: running" line with PID detail.
+// Callers must only invoke this when len(procs) > 0 — a single process reads
+// "Codex: running (PID 1234)"; multiple read "Codex: running (2 processes,
+// PIDs 1234, 5678)".
+func formatRunningProcesses(procs []codex.Process) string {
+	if len(procs) == 1 {
+		return fmt.Sprintf("Codex: running (PID %d)", procs[0].PID)
+	}
+	pids := make([]string, len(procs))
+	for i, p := range procs {
+		pids[i] = strconv.Itoa(p.PID)
+	}
+	return fmt.Sprintf("Codex: running (%d processes, PIDs %s)", len(procs), strings.Join(pids, ", "))
 }
 
 func (m Model) footer() string {
@@ -206,9 +224,19 @@ func (m Model) renderBlocked() string {
 }
 
 func (m Model) renderConfirmRestore() string {
-	id := filepathBase(m.backups[m.selected].Dir)
-	body := fmt.Sprintf("Move the logs in backup %s back to your Codex folder?", id)
-	return m.screen("Restore backup", body, "y yes · n no")
+	bk := m.backups[m.selected]
+	id := filepathBase(bk.Dir)
+	var body strings.Builder
+	fmt.Fprintf(&body, "Move the logs in backup %s back to your Codex folder?", id)
+	for i, it := range bk.Manifest.Items {
+		if i == 0 {
+			body.WriteString("\n\n")
+		} else {
+			body.WriteString("\n")
+		}
+		fmt.Fprintf(&body, "%-18s %10s  → %s", it.Name, codex.HumanBytes(it.Size), it.OriginalPath)
+	}
+	return m.screen("Restore backup", body.String(), "y yes · n no")
 }
 
 func (m Model) renderRestoreList() string {

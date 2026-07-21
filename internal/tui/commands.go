@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -18,13 +20,14 @@ import (
 // Engine seams. They default to the real engine functions and are overridden in
 // tests so the commands (including the running-gate) are hermetically testable.
 var (
-	codexDir       = codex.Dir
-	scanLogs       = codex.ScanLogs
-	isCodexRunning = codex.IsCodexRunning
-	codexMemory    = codex.ProcessMemory
-	planLogs       = cleaner.PlanCodexLogs
-	listBackups    = cleaner.ListBackups
-	restoreBackup  = cleaner.Restore
+	codexDir        = codex.Dir
+	scanLogs        = codex.ScanLogs
+	isCodexRunning  = codex.IsCodexRunning
+	codexMemory     = codex.ProcessMemory
+	detectProcesses = codex.DetectProcesses
+	planLogs        = cleaner.PlanCodexLogs
+	listBackups     = cleaner.ListBackups
+	restoreBackup   = cleaner.Restore
 	// applyPlan moves a plan's logs aside, holding them for hold before they
 	// become eligible for release, and reports (dest, bytesMoved, err).
 	applyPlan = func(p cleaner.Plan, hold time.Duration) (string, int64, error) {
@@ -123,9 +126,11 @@ func restoreCmd(dir string) tea.Cmd {
 	}
 }
 
-// releasedMsg reports which expired backups were released to the Trash on start.
+// releasedMsg reports which expired backups were released to the Trash on
+// start, and where they landed (trashDir is empty if nothing was released).
 type releasedMsg struct {
-	ids []string
+	ids      []string
+	trashDir string
 }
 
 // releaseCmd moves any expired recycling-bin backups into the OS Trash. It is
@@ -135,12 +140,30 @@ func releaseCmd() tea.Msg {
 	if err != nil {
 		return releasedMsg{}
 	}
-	released, _ := cleaner.ReleaseExpired(dir, time.Now())
+	released, trashDir, _ := cleaner.ReleaseExpired(dir, time.Now())
 	if len(released) > 0 {
 		// Best-effort bookkeeping; ignored entirely — see cleanCmd.
 		_ = appendReceipt(recorder.Receipt{At: time.Now(), Action: "prune", BackupIDs: released})
 	}
-	return releasedMsg{ids: released}
+	return releasedMsg{ids: released, trashDir: trashDir}
+}
+
+// shortenHome renders p with the user's home directory prefix shortened to
+// "~", for friendlier note text (e.g. "~/.Trash" instead of the full path).
+// Best-effort: if the home directory can't be resolved, p is returned
+// unchanged rather than failing the caller.
+func shortenHome(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == home {
+		return "~"
+	}
+	if rest, ok := strings.CutPrefix(p, home+string(filepath.Separator)); ok {
+		return "~" + string(filepath.Separator) + rest
+	}
+	return p
 }
 
 // filepathBase wraps filepath.Base for use in view rendering.
@@ -156,7 +179,8 @@ type loadedMsg struct {
 	loadErr   error
 	plan      cleaner.Plan
 	backups   []cleaner.Backup
-	memBytes  int64 // total Codex RSS (0 when unknown)
+	memBytes  int64           // total Codex RSS (0 when unknown)
+	processes []codex.Process // running Codex-like processes (empty when none/unknown)
 }
 
 // walBytes returns the size of the -wal file from a scan report (0 if absent).
@@ -180,10 +204,11 @@ func loadCmd() tea.Msg {
 	supported := runErr != codex.ErrUnsupportedPlatform
 	plan, _ := planLogs(dir)
 	backups, _ := listBackups(dir)
-	mem, _ := codexMemory() // best-effort; 0 on any error — never blocks the dashboard
+	mem, _ := codexMemory()       // best-effort; 0 on any error — never blocks the dashboard
+	procs, _ := detectProcesses() // best-effort; empty slice on any error — never blocks the dashboard
 	return loadedMsg{
 		at: time.Now(), report: report, running: running, supported: supported,
-		runErr: runErr, plan: plan, backups: backups, memBytes: mem,
+		runErr: runErr, plan: plan, backups: backups, memBytes: mem, processes: procs,
 	}
 }
 

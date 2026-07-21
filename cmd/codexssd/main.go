@@ -815,7 +815,7 @@ func cmdPrune(args []string) int {
 		return 0
 	}
 
-	released, err := cleaner.ReleaseExpired(dir, time.Now())
+	released, _, err := cleaner.ReleaseExpired(dir, time.Now())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "codexssd: prune failed: %v\n", err)
 		return 1

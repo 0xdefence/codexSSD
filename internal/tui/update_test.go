@@ -393,6 +393,33 @@ func TestReleasedMsgShowsNoteAndReloads(t *testing.T) {
 	}
 }
 
+// TestReleasedMsgNoteIncludesShortenedTrashDir guards the exact release-note
+// format: "released N backup(s) → <path>" with the home directory shortened
+// to "~".
+func TestReleasedMsgNoteIncludesShortenedTrashDir(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no resolvable home directory on this machine")
+	}
+	m := New(config.Default())
+	m, _ = step(m, releasedMsg{ids: []string{"a", "b"}, trashDir: filepath.Join(home, ".Trash")})
+	want := "released 2 backup(s) → " + filepath.Join("~", ".Trash")
+	if m.releaseNote != want {
+		t.Errorf("releaseNote = %q, want %q", m.releaseNote, want)
+	}
+}
+
+// TestReleasedMsgZeroReleaseHasNoDanglingArrow guards the zero-release case:
+// no note at all, and never a dangling "→ " with an empty path even if a
+// trashDir somehow arrived alongside an empty ids slice.
+func TestReleasedMsgZeroReleaseHasNoDanglingArrow(t *testing.T) {
+	m := New(config.Default())
+	m, _ = step(m, releasedMsg{trashDir: "/should/be/ignored"})
+	if m.releaseNote != "" {
+		t.Errorf("releaseNote = %q, want empty when nothing was released", m.releaseNote)
+	}
+}
+
 func TestDashboardShowsRecyclingBin(t *testing.T) {
 	msg := loadedWithBackup() // one backup, HoldUntil 2026-06-26 10:00
 	m, _ := step(New(config.Default()), msg)

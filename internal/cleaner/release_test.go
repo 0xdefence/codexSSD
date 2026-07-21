@@ -42,14 +42,17 @@ func TestReleaseExpiredMovesOnlyExpired(t *testing.T) {
 	prev := moveToTrash
 	t.Cleanup(func() { moveToTrash = prev })
 	var moved []string
-	moveToTrash = func(p string) error { moved = append(moved, filepath.Base(p)); return nil }
+	moveToTrash = func(p string) (string, error) {
+		moved = append(moved, filepath.Base(p))
+		return filepath.Join("/trash", filepath.Base(p)), nil
+	}
 
 	codexDir := t.TempDir()
 	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
 	mkBackup(t, codexDir, "20260601-000000", now.Add(-time.Hour))   // expired
 	mkBackup(t, codexDir, "20260629-000000", now.Add(48*time.Hour)) // not expired
 
-	released, err := ReleaseExpired(codexDir, now)
+	released, trashDir, err := ReleaseExpired(codexDir, now)
 	if err != nil {
 		t.Fatalf("ReleaseExpired: %v", err)
 	}
@@ -59,15 +62,63 @@ func TestReleaseExpiredMovesOnlyExpired(t *testing.T) {
 	if len(moved) != 1 || moved[0] != "20260601-000000" {
 		t.Errorf("moved = %v, want [20260601-000000]", moved)
 	}
+	if want := "/trash"; trashDir != want {
+		t.Errorf("trashDir = %q, want %q", trashDir, want)
+	}
+}
+
+// TestReleaseExpiredTrashDirIsLastSuccessfulRelease guards the documented
+// behavior for multiple expired backups: trashDir reflects the destination of
+// the LAST successful Release, not the first.
+func TestReleaseExpiredTrashDirIsLastSuccessfulRelease(t *testing.T) {
+	prev := moveToTrash
+	t.Cleanup(func() { moveToTrash = prev })
+	moveToTrash = func(p string) (string, error) {
+		base := filepath.Base(p)
+		return filepath.Join("/trash", base, base), nil
+	}
+
+	codexDir := t.TempDir()
+	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	mkBackup(t, codexDir, "20260601-000000", now.Add(-2*time.Hour)) // expired
+	mkBackup(t, codexDir, "20260602-000000", now.Add(-time.Hour))   // expired
+
+	released, trashDir, err := ReleaseExpired(codexDir, now)
+	if err != nil {
+		t.Fatalf("ReleaseExpired: %v", err)
+	}
+	if len(released) != 2 {
+		t.Fatalf("released = %v, want 2 backups", released)
+	}
+	if want := filepath.Join("/trash", "20260602-000000"); trashDir != want {
+		t.Errorf("trashDir = %q, want %q (the last successful release's directory)", trashDir, want)
+	}
+}
+
+func TestReleaseExpiredNothingReleasedHasEmptyTrashDir(t *testing.T) {
+	codexDir := t.TempDir()
+	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	mkBackup(t, codexDir, "20260629-000000", now.Add(48*time.Hour)) // not expired
+
+	released, trashDir, err := ReleaseExpired(codexDir, now)
+	if err != nil {
+		t.Fatalf("ReleaseExpired: %v", err)
+	}
+	if len(released) != 0 {
+		t.Errorf("released = %v, want none", released)
+	}
+	if trashDir != "" {
+		t.Errorf("trashDir = %q, want empty when nothing was released", trashDir)
+	}
 }
 
 func TestReleaseRefusesNonBackupPath(t *testing.T) {
 	prev := moveToTrash
 	t.Cleanup(func() { moveToTrash = prev })
 	called := false
-	moveToTrash = func(string) error { called = true; return nil }
+	moveToTrash = func(string) (string, error) { called = true; return "", nil }
 
-	if err := Release(filepath.Join(t.TempDir(), "not-a-backup")); err == nil {
+	if _, err := Release(filepath.Join(t.TempDir(), "not-a-backup")); err == nil {
 		t.Fatal("Release should refuse a path not under codexssd-backups/")
 	}
 	if called {
@@ -78,18 +129,21 @@ func TestReleaseRefusesNonBackupPath(t *testing.T) {
 func TestReleaseExpiredKeepsHeldOnTrashFailure(t *testing.T) {
 	prev := moveToTrash
 	t.Cleanup(func() { moveToTrash = prev })
-	moveToTrash = func(string) error { return errors.New("trash unavailable") }
+	moveToTrash = func(string) (string, error) { return "", errors.New("trash unavailable") }
 
 	codexDir := t.TempDir()
 	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
 	bd := mkBackup(t, codexDir, "20260601-000000", now.Add(-time.Hour)) // expired
 
-	released, err := ReleaseExpired(codexDir, now)
+	released, trashDir, err := ReleaseExpired(codexDir, now)
 	if err == nil {
 		t.Fatal("ReleaseExpired should surface the trash error")
 	}
 	if len(released) != 0 {
 		t.Errorf("released = %v, want none on trash failure", released)
+	}
+	if trashDir != "" {
+		t.Errorf("trashDir = %q, want empty on trash failure", trashDir)
 	}
 	if _, statErr := os.Stat(bd); statErr != nil {
 		t.Errorf("backup must remain on disk (held) when trashing fails: %v", statErr)
