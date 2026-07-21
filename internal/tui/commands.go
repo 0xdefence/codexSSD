@@ -14,6 +14,7 @@ import (
 	"github.com/0xdefence/codexssd/internal/notify"
 	"github.com/0xdefence/codexssd/internal/recorder"
 	"github.com/0xdefence/codexssd/internal/self"
+	"github.com/0xdefence/codexssd/internal/tool"
 	"github.com/0xdefence/codexssd/internal/visibility"
 )
 
@@ -47,6 +48,23 @@ var (
 	// notifyFn fires a desktop notification. Overridden in tests so no real
 	// notification UI is ever spawned.
 	notifyFn = notify.Notify
+
+	// Claude Code engine seams, parallel to the Codex ones above. Following the
+	// same seam-variable pattern so Claude's commands are just as hermetically
+	// testable.
+	claudeDir            = func() (string, error) { return tool.Claude().Dir() }
+	isClaudeRunning      = func() (bool, error) { return tool.IsRunning(tool.Claude()) }
+	claudeCleanablePaths = func(dir string, now time.Time, staleAfter time.Duration) []tool.FoundFile {
+		return tool.Claude().CleanablePaths(dir, now, staleAfter)
+	}
+	detectClaudeProcesses = func() ([]tool.Process, error) { return tool.DetectProcesses(tool.Claude()) }
+	// planClaudeLogs mirrors planLogs = cleaner.PlanCodexLogs, but for Claude:
+	// cleaner.PlanTool needs both a profile and a staleness window, since
+	// Claude's own files (unlike Codex's fixed logs) are only cleanable once
+	// stale.
+	planClaudeLogs = func(dir string, staleAfter time.Duration) (cleaner.Plan, error) {
+		return cleaner.PlanTool(tool.Claude(), dir, time.Now(), staleAfter)
+	}
 )
 
 // cleanResultMsg reports the outcome of a tidy.
@@ -97,6 +115,43 @@ func cleanCmd(hold time.Duration) tea.Cmd {
 	}
 }
 
+// claudeCleanCmd is cleanCmd's near-duplicate for Claude Code: it re-checks
+// that Claude Code is stopped (the authoritative gate, completely independent
+// of isCodexRunning), re-plans from disk, and moves the stale files aside held
+// for hold. It NEVER calls applyPlan while Claude Code is running. Reuses the
+// generic cleanResultMsg/blockedMsg types — nothing here is Codex-specific.
+func claudeCleanCmd(hold, staleAfter time.Duration) tea.Cmd {
+	return func() tea.Msg {
+		running, runErr := isClaudeRunning()
+		if runErr == tool.ErrUnsupportedPlatform {
+			return blockedMsg{reason: "This platform can't verify Claude Code is closed, so tidying is disabled here."}
+		}
+		if runErr != nil {
+			return cleanResultMsg{err: runErr}
+		}
+		if running {
+			return blockedMsg{reason: "Claude Code appears to be running. Close it first, then try again."}
+		}
+		dir, err := claudeDir()
+		if err != nil {
+			return cleanResultMsg{err: err}
+		}
+		plan, err := planClaudeLogs(dir, staleAfter)
+		if err != nil {
+			return cleanResultMsg{err: err}
+		}
+		if plan.Empty() {
+			return cleanResultMsg{dest: "", movedBytes: 0}
+		}
+		dest, moved, err := applyPlan(plan, hold)
+		if err == nil {
+			// Best-effort bookkeeping; ignored entirely — see cleanCmd.
+			_ = appendReceipt(recorder.Receipt{At: time.Now(), Action: "clean", BytesMoved: moved, FilesChanged: len(plan.Items), BackupID: filepathBase(dest)})
+		}
+		return cleanResultMsg{dest: dest, movedBytes: moved, err: err}
+	}
+}
+
 // restoreResultMsg reports the outcome of a restore.
 type restoreResultMsg struct {
 	id  string
@@ -116,6 +171,34 @@ func restoreCmd(dir string) tea.Cmd {
 		}
 		if running {
 			return blockedMsg{reason: "Codex appears to be running. Close it first, then try again."}
+		}
+		err := restoreBackup(dir)
+		if err == nil {
+			// Best-effort bookkeeping; ignored entirely — see cleanCmd.
+			_ = appendReceipt(recorder.Receipt{At: time.Now(), Action: "restore", BackupID: filepathBase(dir)})
+		}
+		return restoreResultMsg{id: filepathBase(dir), err: err}
+	}
+}
+
+// claudeRestoreCmd is restoreCmd's near-duplicate for Claude Code: it
+// re-checks that Claude Code is stopped, then restores the backup at dir.
+// It NEVER calls restoreBackup while Claude Code is running. Safe by
+// construction even though it shares the generic restoreBackup seam with
+// Codex: cleaner.Restore resolves the owning profile from the backup's own
+// manifest, so there is no way to restore a Claude backup under Codex's
+// allow-list or vice versa.
+func claudeRestoreCmd(dir string) tea.Cmd {
+	return func() tea.Msg {
+		running, runErr := isClaudeRunning()
+		if runErr == tool.ErrUnsupportedPlatform {
+			return blockedMsg{reason: "This platform can't verify Claude Code is closed, so restoring is disabled here."}
+		}
+		if runErr != nil {
+			return restoreResultMsg{err: runErr}
+		}
+		if running {
+			return blockedMsg{reason: "Claude Code appears to be running. Close it first, then try again."}
 		}
 		err := restoreBackup(dir)
 		if err == nil {
@@ -209,6 +292,45 @@ func loadCmd() tea.Msg {
 	return loadedMsg{
 		at: time.Now(), report: report, running: running, supported: supported,
 		runErr: runErr, plan: plan, backups: backups, memBytes: mem, processes: procs,
+	}
+}
+
+// loadedClaudeMsg carries a full Claude Code status snapshot, parallel to
+// loadedMsg. dir/cleanable back the dashboard's compact panel and the Claude
+// screen's itemized listing; plan is the apply-ready form used by the tidy
+// flow (see planClaudeLogs's doc comment for why both are gathered).
+type loadedClaudeMsg struct {
+	dir       string
+	loadErr   error
+	running   bool
+	supported bool
+	runErr    error
+	cleanable []tool.FoundFile
+	plan      cleaner.Plan
+	backups   []cleaner.Backup
+	processes []tool.Process
+}
+
+// loadClaudeCmd gathers the Claude Code snapshot (read-only), sibling to
+// loadCmd. Every call is best-effort: a failure to resolve the directory is
+// the only thing that short-circuits the rest of the gather, and every other
+// step degrades to its zero value on error rather than blocking the dashboard.
+func loadClaudeCmd(staleAfter time.Duration) tea.Cmd {
+	return func() tea.Msg {
+		dir, err := claudeDir()
+		if err != nil {
+			return loadedClaudeMsg{loadErr: err}
+		}
+		running, runErr := isClaudeRunning()
+		supported := runErr != tool.ErrUnsupportedPlatform
+		cleanable := claudeCleanablePaths(dir, time.Now(), staleAfter)
+		plan, _ := planClaudeLogs(dir, staleAfter)
+		backups, _ := listBackups(dir)
+		procs, _ := detectClaudeProcesses() // best-effort; empty slice on any error — never blocks the dashboard
+		return loadedClaudeMsg{
+			dir: dir, running: running, supported: supported, runErr: runErr,
+			cleanable: cleanable, plan: plan, backups: backups, processes: procs,
+		}
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/0xdefence/codexssd/internal/codex"
 	"github.com/0xdefence/codexssd/internal/monitor"
+	"github.com/0xdefence/codexssd/internal/tool"
 )
 
 // banner classifies what the dashboard's deadweight line should say.
@@ -41,20 +42,28 @@ func (m Model) View() string {
 	switch m.state {
 	case stateConfirmClean:
 		return m.renderConfirmClean()
-	case stateCleaning:
-		return m.renderWorking("Tidying Codex logs aside…")
+	case stateCleaning, stateRestoring:
+		// workingLabel is set by whichever dispatch site (Codex or Claude) put
+		// us in this state, so this single case covers both tools.
+		return m.renderWorking(m.workingLabel)
 	case stateRestoreList:
 		return m.renderRestoreList()
 	case stateConfirmRestore:
 		return m.renderConfirmRestore()
-	case stateRestoring:
-		return m.renderWorking("Restoring…")
 	case stateResult:
 		return m.renderResult()
 	case stateBlocked:
 		return m.renderBlocked()
 	case stateInfo:
 		return m.renderInfo()
+	case stateClaude:
+		return m.renderClaude()
+	case stateClaudeConfirmClean:
+		return m.renderClaudeConfirmClean()
+	case stateClaudeRestoreList:
+		return m.renderClaudeRestoreList()
+	case stateClaudeConfirmRestore:
+		return m.renderClaudeConfirmRestore()
 	default:
 		return m.renderDashboard()
 	}
@@ -106,7 +115,7 @@ func (m Model) renderDashboard() string {
 	case !m.supported:
 		fmt.Fprint(&risk, "Codex: can't check")
 	case m.running && len(m.processes) > 0:
-		fmt.Fprint(&risk, formatRunningProcesses(m.processes))
+		fmt.Fprint(&risk, formatRunningProcesses("Codex", m.processes))
 	case m.running:
 		fmt.Fprint(&risk, "Codex: running")
 	default:
@@ -138,6 +147,10 @@ func (m Model) renderDashboard() string {
 	}
 	sections = append(sections, panel("Recycling bin", bin, w))
 
+	// Claude Code (full width): dir + cleanable summary + running state, same
+	// PID-inclusive style as the Codex Risk panel above.
+	sections = append(sections, panel("Claude Code", m.claudePanelLine(), w))
+
 	// Banner line (unchanged logic).
 	switch m.bannerState() {
 	case bannerActionable:
@@ -155,23 +168,58 @@ func (m Model) renderDashboard() string {
 	return strings.Join(sections, "\n")
 }
 
-// formatRunningProcesses renders the "Codex: running" line with PID detail.
+// formatRunningProcesses renders a "<label>: running" line with PID detail, or
+// just "running (...)" with no prefix when label is empty (for panels whose
+// title already names the tool, so repeating it inline would be redundant).
 // Callers must only invoke this when len(procs) > 0 — a single process reads
-// "Codex: running (PID 1234)"; multiple read "Codex: running (2 processes,
+// "Codex: running (PID 1234)" / "running (PID 1234)"; multiple read
+// "Codex: running (2 processes, PIDs 1234, 5678)" / "running (2 processes,
 // PIDs 1234, 5678)".
-func formatRunningProcesses(procs []codex.Process) string {
+func formatRunningProcesses(label string, procs []tool.Process) string {
+	prefix := ""
+	if label != "" {
+		prefix = label + ": "
+	}
 	if len(procs) == 1 {
-		return fmt.Sprintf("Codex: running (PID %d)", procs[0].PID)
+		return fmt.Sprintf("%srunning (PID %d)", prefix, procs[0].PID)
 	}
 	pids := make([]string, len(procs))
 	for i, p := range procs {
 		pids[i] = strconv.Itoa(p.PID)
 	}
-	return fmt.Sprintf("Codex: running (%d processes, PIDs %s)", len(procs), strings.Join(pids, ", "))
+	return fmt.Sprintf("%srunning (%d processes, PIDs %s)", prefix, len(procs), strings.Join(pids, ", "))
+}
+
+// claudePanelLine renders the dashboard's compact, full-width Claude Code
+// summary: directory, cleanable summary, and running state — mirroring round
+// 2's PID-inclusive style already established for the Codex Risk panel above.
+func (m Model) claudePanelLine() string {
+	if m.claudeLoadErr != nil {
+		return fmt.Sprintf("Could not read Claude Code's folder: %v", m.claudeLoadErr)
+	}
+	if m.claudeDir == "" {
+		return "loading…"
+	}
+	var total int64
+	for _, f := range m.claudeCleanable {
+		total += f.Size
+	}
+	line := fmt.Sprintf("%s · %d stale file(s), %s cleanable", m.claudeDir, len(m.claudeCleanable), codex.HumanBytes(total))
+	switch {
+	case !m.claudeSupported:
+		line += " · can't check"
+	case m.claudeRunning && len(m.claudeProcesses) > 0:
+		line += " · " + formatRunningProcesses("", m.claudeProcesses)
+	case m.claudeRunning:
+		line += " · running"
+	default:
+		line += " · not running"
+	}
+	return line
 }
 
 func (m Model) footer() string {
-	return "c tidy · r restore · i info · ? help · q quit"
+	return "c tidy · r restore · i info · l claude · ? help · q quit"
 }
 
 // friendlyInterval formats a poll interval the way a non-technical user reads
@@ -258,11 +306,105 @@ func (m Model) renderRestoreList() string {
 	return m.screen("Restore a backup", body.String(), "↑/↓ choose · enter select · esc back")
 }
 
+// renderClaude shows the Claude Code screen (entered via the l key): the
+// cleanable-file listing and the recycling-bin summary, stacked full-width —
+// matching the Info screen's stacked-panel style, not the dashboard's
+// side-by-side treatment. Data is fetched lazily by loadClaudeCmd when the
+// screen is entered; until it arrives, this shows "loading…" (same pattern as
+// renderInfo, gated on claudeLoaded instead of infoLoaded).
+func (m Model) renderClaude() string {
+	w := effectiveWidth(m)
+	if !m.claudeLoaded {
+		return strings.Join([]string{
+			renderCompactLogo(w),
+			"",
+			panel("Claude Code", "loading…", w),
+			"",
+			statusBar("esc back", "watching ~/.codex", w),
+		}, "\n")
+	}
+
+	var cleanable strings.Builder
+	fmt.Fprintf(&cleanable, "%s\n", m.claudeDir)
+	if len(m.claudeCleanable) == 0 {
+		fmt.Fprint(&cleanable, "Nothing stale to report right now — no cleanable Claude Code files were found.")
+	} else {
+		var total int64
+		for _, f := range m.claudeCleanable {
+			fmt.Fprintf(&cleanable, "%-40s %10s\n", f.Rel, codex.HumanBytes(f.Size))
+			total += f.Size
+		}
+		fmt.Fprintf(&cleanable, "%-40s %10s\n", "Total", codex.HumanBytes(total))
+	}
+	fmt.Fprint(&cleanable, "\nFresh Claude Code session files aren't listed here on purpose — they're still in use.")
+
+	bin := "empty"
+	if t, ok := m.claudeLastTidy(); ok {
+		bin = fmt.Sprintf("%d backup(s) · last tidy %s", len(m.claudeBackups), t.Format("2006-01-02 15:04"))
+		if s, ok := m.claudeSoonestRelease(); ok {
+			bin += fmt.Sprintf(" · next release %s", s.Format("2006-01-02"))
+		}
+	}
+
+	sections := []string{
+		renderCompactLogo(w), "",
+		panel("Claude Code", cleanable.String(), w), "",
+		panel("Recycling bin", bin, w), "",
+		statusBar("c tidy · r restore · esc back", "watching ~/.codex", w),
+	}
+	return strings.Join(sections, "\n")
+}
+
+// renderClaudeConfirmClean mirrors renderConfirmClean for Claude Code.
+func (m Model) renderClaudeConfirmClean() string {
+	body := fmt.Sprintf("Move %s of Claude Code's stale session files into a recoverable bin?\nNothing is deleted — you can restore them any time.",
+		codex.HumanBytes(m.claudePlan.TotalBytes))
+	return m.screen("Tidy Claude Code files", body, "y yes · n no")
+}
+
+// renderClaudeRestoreList mirrors renderRestoreList for Claude Code's own backups.
+func (m Model) renderClaudeRestoreList() string {
+	var body strings.Builder
+	for i, bk := range m.claudeBackups {
+		var total int64
+		for _, it := range bk.Manifest.Items {
+			total += it.Size
+		}
+		row := fmt.Sprintf("%-18s %10s   releases %s", filepathBase(bk.Dir), codex.HumanBytes(total), bk.Manifest.HoldUntil.Format("2006-01-02"))
+		if i == m.selected {
+			row = selectedRowStyle.Render(row)
+		}
+		if i > 0 {
+			body.WriteString("\n")
+		}
+		body.WriteString(row)
+	}
+	return m.screen("Restore a Claude Code backup", body.String(), "↑/↓ choose · enter select · esc back")
+}
+
+// renderClaudeConfirmRestore mirrors renderConfirmRestore for Claude Code.
+func (m Model) renderClaudeConfirmRestore() string {
+	bk := m.claudeBackups[m.selected]
+	id := filepathBase(bk.Dir)
+	var body strings.Builder
+	fmt.Fprintf(&body, "Move the files in backup %s back to your Claude Code folder?", id)
+	for i, it := range bk.Manifest.Items {
+		if i == 0 {
+			body.WriteString("\n\n")
+		} else {
+			body.WriteString("\n")
+		}
+		fmt.Fprintf(&body, "%-18s %10s  → %s", it.Name, codex.HumanBytes(it.Size), it.OriginalPath)
+	}
+	return m.screen("Restore backup", body.String(), "y yes · n no")
+}
+
 func (m Model) renderHelp() string {
 	body := strings.Join([]string{
 		"c    tidy Codex's logs aside (recoverable)",
 		"r    restore previously tidied logs",
 		"i    open the info screen (settings, self-footprint, disk report)",
+		"l    open the Claude Code screen (tidy/restore its own stale files)",
 		"?    toggle this help",
 		"q    quit",
 	}, "\n")
