@@ -4,9 +4,9 @@ name: CI
 # direct pushes to main. The job name "ci" is the required status check.
 on:
   push:
-    branches: [main, staging]
+    branches: [main]
   pull_request:
-    branches: [main, staging]
+    branches: [main]
 
 permissions:
   contents: read
