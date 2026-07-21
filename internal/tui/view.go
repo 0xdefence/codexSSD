@@ -264,11 +264,21 @@ func (m Model) renderResult() string {
 	if m.resultErr != nil {
 		body = fmt.Sprintf("Something went wrong: %v", m.resultErr)
 	}
-	return m.screen("CodexSSD", body, "enter return to dashboard")
+	return m.screen("CodexSSD", body, "enter "+m.returnDescription())
 }
 
 func (m Model) renderBlocked() string {
-	return m.screen("Can't do that right now", m.blockedReason, "enter return to dashboard")
+	return m.screen("Can't do that right now", m.blockedReason, "enter "+m.returnDescription())
+}
+
+// returnDescription describes where enter/esc will take you back from a
+// result/blocked screen, matching returnState so the footer text is never
+// wrong about which screen you're actually returning to.
+func (m Model) returnDescription() string {
+	if m.returnState == stateClaude {
+		return "return to Claude Code"
+	}
+	return "return to dashboard"
 }
 
 func (m Model) renderConfirmRestore() string {
