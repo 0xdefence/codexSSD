@@ -26,6 +26,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.plan = msg.plan
 		m.backups = msg.backups
 		m.memBytes = msg.memBytes
+		// Capture the previously-displayed level before it's overwritten below —
+		// this is the only place old and new assessments are both in scope, so
+		// the escalation check (for the notification) happens right here.
+		last := m.assessment.Level
 		s := monitor.Sample{At: msg.at, TotalBytes: msg.report.TotalBytes, WALBytes: walBytes(msg.report), MemBytes: msg.memBytes}
 		m.samples = monitor.AppendSample(m.samples, s, maxSamples)
 		m.assessment = monitor.Evaluate(m.samples, m.running, m.cfg.MonitorThresholds())
@@ -41,6 +45,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.assessment.Level > m.peakRisk {
 			m.peakRisk = m.assessment.Level
+		}
+		// Best-effort desktop notification on escalation into HIGH/CRITICAL,
+		// gated on config (same field `watch --no-notify` respects). This is a
+		// background side-effect only — no visual change on the dashboard itself.
+		if m.cfg.Notifications && escalatedToAlarming(last, m.assessment.Level) {
+			return m, notifyCmd(m.assessment)
 		}
 		return m, nil
 	case tickMsg:
@@ -77,6 +87,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case blockedMsg:
 		m.state = stateBlocked
 		m.blockedReason = msg.reason
+		return m, nil
+	case infoMsg:
+		m.infoLoaded = true
+		m.selfReport = msg.self
+		m.selfErr = msg.selfErr
+		m.diskReport = msg.disk
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -147,6 +163,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = stateDashboard
 			return m, loadCmd // refresh after returning
 		}
+	case stateInfo:
+		switch msg.String() {
+		case "esc":
+			m.state = stateDashboard
+			return m, loadCmd // refresh after returning
+		}
 	}
 	return m, nil
 }
@@ -184,6 +206,10 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.selected = 0
 		m.state = stateRestoreList
 		return m, nil
+	case "i":
+		m.state = stateInfo
+		m.infoLoaded = false
+		return m, infoCmd(m.cfg.StaleAfter())
 	}
 	return m, nil
 }
