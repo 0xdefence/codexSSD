@@ -241,6 +241,9 @@ func runWatch(w io.Writer, jsonOut bool, label, toolName string, th monitor.Thre
 		}
 		if escalatedToAlarming {
 			body := label + " disk/memory activity looks alarming."
+			if len(a.Reasons) > 0 {
+				body = label + ": " + a.Reasons[0]
+			}
 			_ = deps.notify("CodexSSD: "+a.Level.String(), body) // fire-and-forget
 		}
 	}
