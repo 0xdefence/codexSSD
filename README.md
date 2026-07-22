@@ -84,6 +84,22 @@ go install github.com/0xdefence/codexssd/cmd/codexssd@latest
 
 ## Usage
 
+### Works with Codex and Claude Code
+
+Every data command takes `--tool codex|claude` (default `codex`):
+
+| Command | Codex | Claude Code |
+| --- | --- | --- |
+| `status` / `report` / `clean` / `restore` / `prune` | ✓ | ✓ (`--tool claude`) |
+| `watch` | ✓ | ✓ (`--tool claude`) |
+| `mcp` (five read-only tools) | ✓ | ✓ (`{"tool":"claude"}` argument) |
+| dashboard (bare `codexssd`) | ✓ | ✓ (Claude Code panel + `l` screen) |
+| `install-agent` | ✓ AGENTS.md | not yet |
+
+Claude Code is handled more conservatively than Codex on purpose — see
+[Beyond Codex: Claude Code](#beyond-codex-claude-code) for what is (and
+deliberately isn't) cleanable.
+
 ### Bare `codexssd` — the interactive dashboard (start here)
 
 ```bash
@@ -150,8 +166,8 @@ If you don't have a `~/.codex` directory, `status` says so politely and exits
 cleanly — there's nothing to report.
 
 Every command that acts on or reports a tool's own files — `status`, `report`,
-`clean`, `restore`, `prune` — accepts `--tool codex|claude` (default `codex`).
-`watch` stays Codex-only for now. See
+`clean`, `restore`, `prune`, and `watch` — accepts `--tool codex|claude`
+(default `codex`). See
 [Beyond Codex: Claude Code](#beyond-codex-claude-code) below.
 
 ### `clean` — move logs aside (dry-run by default, never deletes)
@@ -224,22 +240,26 @@ codexssd watch                 # watch in the foreground; Ctrl-C to stop
 codexssd watch --interval 10s  # check more often than the default (config, 30s)
 codexssd watch --no-notify     # suppress desktop notifications
 codexssd watch --json          # emit one JSON line per risk-level change
+codexssd watch --tool claude   # watch Claude Code's footprint instead of Codex's
 ```
 
-`watch` samples Codex's log sizes and memory use on a timer and prints a line
-whenever the risk level changes (calm sessions stay quiet). If things escalate
-to a high or critical level, it fires a best-effort desktop notification —
-notifications are fire-and-forget and never block or fail the watch loop.
-On exit it writes one small session receipt to CodexSSD's own history; it
-never touches Codex's files.
+`watch` samples a tool's disk footprint and memory use on a timer and prints a
+line whenever the risk level changes (calm sessions stay quiet). If things
+escalate to a high or critical level, it fires a best-effort desktop
+notification — notifications are fire-and-forget and never block or fail the
+watch loop. On exit it writes one small session receipt to CodexSSD's own
+history; it never touches the watched tool's files. With `--tool claude`, it
+measures the growth of `~/.claude`'s whole footprint (the recycling bin
+excluded, and no WAL checks — Claude Code has no WAL) rather than Codex's
+fixed log files; `--json` lines carry a `"tool"` field either way.
 
-While watching, it also quietly notices any new entries that appear in
+While watching Codex, it also quietly notices any new entries that appear in
 `~/.codex` during the session ("I watched this get created while Codex was
 running" is a much stronger signal than guessing from a name) and remembers
 that — this is purely an observation, best-effort, and never touches those
 entries. `report` later mentions if something you're looking at showed up
-during a watched session. `watch` is Codex-only for now; it doesn't take
-`--tool`.
+during a watched session. This behavioral tracking is Codex-only for now;
+`watch --tool claude` doesn't do it.
 
 ### `prune` — release expired recycling-bin backups to the Trash
 
@@ -305,7 +325,7 @@ above.
 
 CodexSSD started as a Codex-only tool, but the same safety-first approach now
 also covers Claude Code — just add `--tool claude` to `status`, `report`,
-`clean`, `restore`, or `prune`.
+`clean`, `restore`, `prune`, or `watch`.
 
 Claude Code is different from Codex in one important way: Codex's log files
 are safe to move aside at any moment, but Claude Code's own recoverable data —
@@ -369,12 +389,19 @@ simple: **an agent can see everything and touch nothing.** There is no
 mutating tool, and there never will be — `mcp` exposes exactly five read-only
 tools:
 
-- `codex_status` — sizes of Codex's own log files
+- `codex_status` — sizes of a tool's own known files
 - `clean_plan` — the dry-run plan of what `clean` *would* move aside (this
   server can never execute it)
 - `list_backups` — recoverable recycling-bin backups
 - `self_report` — CodexSSD's own footprint and action history
-- `disk_report` — what's using disk inside `~/.codex`, with stale flags
+- `disk_report` — what's using disk inside a tool's directory, with stale flags
+
+Each of the five tools takes one optional argument, `{"tool": "codex" |
+"claude"}` (default `codex`), to pick which profile it reports on. The tool
+*names* stay as-is regardless — they're historical (`codex_status` is named
+for the founding profile) and kept stable so existing client configs don't
+break. `self_report` accepts the argument but ignores it, since CodexSSD's own
+footprint isn't tool-specific.
 
 Setup with Claude Code:
 
@@ -390,10 +417,11 @@ deliberate Phase-2-era narrowing that `report` covers `~/.codex` only, per the
 spec. Phase 3 (the shallow connection map) has **shipped** for Claude Code
 project folders — Codex entries have no probe yet and `report` says so
 outright. Phase 4 (multi-tool support + behavioural detection) has **partially
-shipped**: Claude Code now has full `status`/`report`/`clean`/`restore`/`prune`
-support, and `watch` records best-effort behavioural provenance for Codex.
-Deep relationship-mapping, Cursor/Gemini support, cost/token awareness, and
-daily/weekly summaries remain future work. See
+shipped**: Claude Code now has full
+`status`/`report`/`clean`/`restore`/`prune`/`watch` and MCP support, and
+`watch` records best-effort behavioural provenance for Codex (not yet for
+Claude Code). Deep relationship-mapping, Cursor/Gemini support, cost/token
+awareness, and daily/weekly summaries remain future work. See
 [`docs/roadmap.md`](docs/roadmap.md) for the full phase plan and
 [`docs/scope.md`](docs/scope.md) for the in/out line in the sand.
 

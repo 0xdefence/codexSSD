@@ -48,7 +48,10 @@ machine. Any change that weakens them is wrong by definition.
 7. **`internal/mcpserver` is read-only by definition.** It exposes exactly
    five read-only tools (`codex_status`, `clean_plan`, `list_backups`,
    `self_report`, `disk_report`) and may never gain a mutating tool — an agent
-   using it can see everything and touch nothing.
+   using it can see everything and touch nothing. Each tool accepts an
+   optional `{"tool": "codex"|"claude"}` argument (default `codex`) to select
+   which profile it reports on; the tool names and read-only guarantee are
+   unaffected.
 
 ## Current state
 
@@ -65,14 +68,19 @@ status. All commands:
   for other profiles, lists what is currently cleanable (stale own files only —
   fresh ones are left off deliberately). Supports `--json`, `--tool
   codex|claude` (default `codex`).
-- **`watch`** — foreground, read-only monitor over Codex's logs and memory
-  (Codex only — no `--tool` flag); prints on risk-level change, fires
-  best-effort desktop notifications (`internal/notify`) on escalation, records
-  one session receipt on exit. Also does best-effort behavioral tracking via
-  `internal/behavior`: entries appearing in `~/.codex` while Codex is running
-  are appended, one JSONL line per appearance, to
-  `~/.codexssd/provenance.jsonl` — never blocks the loop on failure. Supports
-  `--interval`, `--no-notify`, `--json`.
+- **`watch`** — foreground, read-only monitor over a tool's disk and memory;
+  supports `--tool codex|claude` (default `codex`). For Codex it watches the
+  known log files plus WAL size; for Claude Code it watches `~/.claude`'s
+  whole footprint (the recycling bin excluded) with no WAL checks (Claude
+  Code has none). Prints on risk-level change, fires best-effort desktop
+  notifications (`internal/notify`) on escalation, records one session
+  receipt on exit (`watch --tool claude` when applicable). `--json` lines
+  include a `"tool"` field for both tools. Also does best-effort behavioral
+  tracking via `internal/behavior`, codex-only for now: entries appearing in
+  `~/.codex` while Codex is running are appended, one JSONL line per
+  appearance, to `~/.codexssd/provenance.jsonl` — never blocks the loop on
+  failure. Supports `--interval`, `--no-notify`, `--json`, `--tool
+  codex|claude`.
 - **`clean`** — dry-run by default; with `--yes` moves a tool's own files aside
   to a recoverable recycling bin via `internal/cleaner`. Refuses if the tool is
   running. Supports `--json`, `--tool codex|claude`.
@@ -96,7 +104,10 @@ status. All commands:
 - **`self`** — reports CodexSSD's own footprint via `internal/self`. Supports
   `--json`.
 - **`mcp`** — serves the five read-only MCP tools over stdio via
-  `internal/mcpserver` (Codex only, unchanged by multi-tool work).
+  `internal/mcpserver`. Each tool now accepts an optional `{"tool":
+  "codex"|"claude"}` argument (default `codex`); tool names are unchanged;
+  `self_report` accepts and ignores the argument; an unknown value is an
+  invalid-params error.
 - bare `codexssd` (no subcommand) — the interactive TUI dashboard.
 
 When implementing a new command, keep read-only behavior read-only, and keep
