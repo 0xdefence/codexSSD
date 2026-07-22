@@ -100,5 +100,15 @@ Review-approved-with-minors, deliberately deferred:
   `ps -o rss=` call surfaces as `(0, err)` instead of `(0, nil)` (mirrors the
   codex original; decide once for both).
 
+From the final whole-branch review (also all Minor, deferred):
+
+- `TestRunWatchClaudeToolLabels` uses a 50ms sleep before `close(stop)`; make
+  it deterministic by waiting on the `sampled` channel after the tick instead.
+- `parseToolArg` has no test for malformed arguments (e.g. `{"tool":123}`);
+  one-line table addition to `TestCallToolUnknownToolErrors`.
+- Pre-existing (predates the branch, surfaced via MCP): `cleaner.Plan` JSON
+  uses `codex_dir` for claude plans (documented compat; consider an additive
+  `dir` alias) and empty plans marshal `"items": null` vs `list_backups`' `[]`.
+
 **Acceptance:** each item either fixed with a test or explicitly documented as
 intended; gate green.
