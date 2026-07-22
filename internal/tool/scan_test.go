@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -92,5 +93,30 @@ func TestAllows(t *testing.T) {
 		if got := p.Allows(dir, c.path); got != c.want {
 			t.Errorf("Allows(%q) = %v, want %v", c.path, got, c.want)
 		}
+	}
+}
+
+func TestScanDirSize(t *testing.T) {
+	dir := t.TempDir()
+	writeFile := func(rel string, size int) {
+		path := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, bytes.Repeat([]byte("x"), size), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile("projects/a/sess.jsonl", 100)
+	writeFile("shell-snapshots/snap1", 40)
+	writeFile("settings.json", 10)
+	// The recycling bin must NOT count: our own tidies are not agent writes.
+	writeFile(BackupDirName+"/20260101-000000/big.jsonl", 5000)
+
+	if got := ScanDirSize(dir); got != 150 {
+		t.Fatalf("ScanDirSize = %d, want 150 (backups excluded)", got)
+	}
+	if got := ScanDirSize(filepath.Join(dir, "no-such-dir")); got != 0 {
+		t.Fatalf("ScanDirSize(missing) = %d, want 0", got)
 	}
 }
