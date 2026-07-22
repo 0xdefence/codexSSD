@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/0xdefence/codexssd/internal/codex"
+	"github.com/0xdefence/codexssd/internal/tool"
 	"github.com/0xdefence/codexssd/internal/visibility"
 )
 
@@ -17,13 +18,13 @@ func serve(t *testing.T, requests ...string) []map[string]any {
 	t.Helper()
 	s := New()
 	// Stub every data source: protocol tests must not read the real ~/.codex.
-	s.status = func() (codex.LogReport, error) {
+	s.status = func(tool.Profile) (any, error) {
 		return codex.LogReport{CodexDir: "/tmp/x/.codex", DirExists: true, Files: []codex.LogFile{}, TotalBytes: 42}, nil
 	}
-	s.cleanPlan = func() (any, error) { return map[string]any{"total_bytes": 42}, nil }
-	s.backups = func() (any, error) { return []any{}, nil }
+	s.cleanPlan = func(tool.Profile) (any, error) { return map[string]any{"total_bytes": 42}, nil }
+	s.backups = func(tool.Profile) (any, error) { return []any{}, nil }
 	s.selfReport = func() (any, error) { return map[string]any{"mode": "low-write"}, nil }
-	s.diskReport = func() (visibility.Report, error) {
+	s.diskReport = func(tool.Profile) (visibility.Report, error) {
 		return visibility.Scan("/nonexistent-for-test", time.Now(), time.Hour), nil
 	}
 
@@ -114,5 +115,51 @@ func TestErrors(t *testing.T) {
 	}
 	if _, ok := resps[3]["result"]; !ok {
 		t.Error("ping must return an empty result")
+	}
+}
+
+func TestCallToolClaudeArgument(t *testing.T) {
+	var gotTool string
+	s := &Server{
+		status: func(p tool.Profile) (any, error) { gotTool = p.Name; return map[string]string{"ok": "yes"}, nil },
+	}
+	if _, err := s.callTool("codex_status", json.RawMessage(`{"tool":"claude"}`)); err != nil {
+		t.Fatalf("callTool error: %v", err)
+	}
+	if gotTool != "claude" {
+		t.Fatalf("dispatched tool = %q, want claude", gotTool)
+	}
+}
+
+func TestCallToolDefaultsToCodex(t *testing.T) {
+	var gotTool string
+	s := &Server{
+		status: func(p tool.Profile) (any, error) { gotTool = p.Name; return "ok", nil },
+	}
+	// nil, empty object, and empty raw message all mean codex.
+	for _, raw := range []json.RawMessage{nil, json.RawMessage(`{}`)} {
+		if _, err := s.callTool("codex_status", raw); err != nil {
+			t.Fatalf("callTool(%s) error: %v", raw, err)
+		}
+		if gotTool != "codex" {
+			t.Fatalf("dispatched tool = %q, want codex", gotTool)
+		}
+	}
+}
+
+func TestCallToolUnknownToolErrors(t *testing.T) {
+	s := &Server{status: func(tool.Profile) (any, error) { return "ok", nil }}
+	if _, err := s.callTool("codex_status", json.RawMessage(`{"tool":"copilot"}`)); err == nil {
+		t.Fatal("want error for unknown tool, got nil")
+	}
+}
+
+func TestToolDescriptorsAdvertiseToolArg(t *testing.T) {
+	for _, d := range toolDescriptors() {
+		schema := d["inputSchema"].(map[string]any)
+		props := schema["properties"].(map[string]any)
+		if _, ok := props["tool"]; !ok {
+			t.Fatalf("descriptor %v missing tool property", d["name"])
+		}
 	}
 }
