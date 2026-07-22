@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"io/fs"
 	"os"
 	slashpath "path"
 	"path/filepath"
@@ -95,4 +96,32 @@ func (p Profile) offLimits(rel string) bool {
 		}
 	}
 	return false
+}
+
+// ScanDirSize returns the total size in bytes of all regular files under dir,
+// excluding the codexssd-backups recycling bin — so the tool's own tidies are
+// never mistaken for agent write activity. A missing or unreadable dir (or any
+// unreadable entry) contributes 0 rather than an error: this feeds a live
+// monitor, which must degrade gracefully, never fail.
+//
+// SAFETY: read-only (WalkDir/Stat only).
+func ScanDirSize(dir string) int64 {
+	var total int64
+	root := filepath.Clean(dir)
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip unreadable entries; never fatal
+		}
+		if d.IsDir() {
+			if d.Name() == BackupDirName && path != root {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if info, err := d.Info(); err == nil {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
 }

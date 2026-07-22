@@ -16,6 +16,7 @@ import (
 	"github.com/0xdefence/codexssd/internal/monitor"
 	"github.com/0xdefence/codexssd/internal/notify"
 	"github.com/0xdefence/codexssd/internal/recorder"
+	"github.com/0xdefence/codexssd/internal/tool"
 )
 
 // minWatchInterval is the floor below which --interval is clamped, mirroring
@@ -46,7 +47,10 @@ func watchInterval(flagVal time.Duration, cfg config.Config) time.Duration {
 // watchDeps injects every effect the watch loop has, so tests can script a
 // whole session deterministically.
 type watchDeps struct {
-	scan    func() codex.LogReport
+	// scan returns the tool's current disk footprint: total bytes plus the
+	// WAL size for tools that have one (0 otherwise — the WAL risk checks
+	// then simply never fire, no special-casing needed).
+	scan    func() (totalBytes, walBytes int64)
 	memory  func() (int64, error)
 	running func() (bool, error)
 	notify  func(title, body string) error
@@ -71,19 +75,19 @@ func cmdWatch(args []string) int {
 	interval := fs.Duration("interval", 0, "poll interval (default: from config, 30s)")
 	noNotify := fs.Bool("no-notify", false, "disable desktop notifications")
 	jsonOut := fs.Bool("json", false, "emit one JSON line per risk-level change")
+	toolName := fs.String("tool", "codex", "which AI tool to watch (codex, claude)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: codexssd watch [--interval 30s] [--no-notify] [--json]\n\n")
-		fmt.Fprintf(os.Stderr, "Watch Codex's logs and memory in the foreground; Ctrl-C to stop.\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: codexssd watch [--interval 30s] [--no-notify] [--json] [--tool codex|claude]\n\n")
+		fmt.Fprintf(os.Stderr, "Watch a tool's disk and memory in the foreground; Ctrl-C to stop.\n\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
-	dir, err := codex.Dir()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "codexssd: could not determine your home directory: %v\n", err)
-		return 1
+	p, dir, code := resolveTool(*toolName)
+	if code != 0 {
+		return code
 	}
 	cfg := loadConfig()
 	*interval = watchInterval(*interval, cfg)
@@ -98,13 +102,16 @@ func cmdWatch(args []string) int {
 	// watched session" — a far stronger signal than guessing by name alone.
 	// Best-effort throughout: a failure to resolve the provenance path just
 	// disables tracking for this session (one warning), never the watch loop.
+	// Codex-only this round — Claude Code doesn't yet have a provenance model.
 	var trackBehavior func(agentRunning bool, now time.Time) []behavior.Event
-	if provPath, err := behavior.ProvenancePath(); err != nil {
-		fmt.Fprintf(os.Stderr, "codexssd: note: couldn't determine provenance path: %v — behavioral tracking disabled for this session.\n", err)
-	} else {
-		tracker := behavior.NewTracker("codex", provPath, readDirNames(dir))
-		trackBehavior = func(agentRunning bool, now time.Time) []behavior.Event {
-			return tracker.Observe(readDirNames(dir), agentRunning, now)
+	if p.Name == "codex" {
+		if provPath, err := behavior.ProvenancePath(); err != nil {
+			fmt.Fprintf(os.Stderr, "codexssd: note: couldn't determine provenance path: %v — behavioral tracking disabled for this session.\n", err)
+		} else {
+			tracker := behavior.NewTracker("codex", provPath, readDirNames(dir))
+			trackBehavior = func(agentRunning bool, now time.Time) []behavior.Event {
+				return tracker.Observe(readDirNames(dir), agentRunning, now)
+			}
 		}
 	}
 
@@ -117,16 +124,34 @@ func cmdWatch(args []string) int {
 	defer ticker.Stop()
 
 	deps := watchDeps{
-		scan:            func() codex.LogReport { return codex.ScanLogs(dir) },
-		memory:          func() (int64, error) { return codex.ProcessMemory() },
-		running:         codex.IsCodexRunning,
 		notify:          notifier,
 		now:             time.Now,
 		tick:            ticker.C,
 		stop:            stop,
 		observeBehavior: trackBehavior,
 	}
-	rec := runWatch(os.Stdout, *jsonOut, cfg.MonitorThresholds(), deps)
+	if p.Name == "codex" {
+		// Founding path, byte-for-byte: fixed-file scan with WAL extraction.
+		deps.scan = func() (int64, int64) {
+			r := codex.ScanLogs(dir)
+			var wal int64
+			for _, f := range r.Files {
+				if f.Name == "logs_2.sqlite-wal" && f.Exists {
+					wal = f.Size
+				}
+			}
+			return r.TotalBytes, wal
+		}
+		deps.memory = codex.ProcessMemory
+		deps.running = codex.IsCodexRunning
+	} else {
+		// Glob-profile tools: whole-dir footprint (no WAL → 0, so WAL risk
+		// checks never fire), generic process matching and memory.
+		deps.scan = func() (int64, int64) { return tool.ScanDirSize(dir), 0 }
+		deps.memory = func() (int64, error) { return tool.ProcessMemory(p) }
+		deps.running = func() (bool, error) { return tool.IsRunning(p) }
+	}
+	rec := runWatch(os.Stdout, *jsonOut, p.DisplayName, p.Name, cfg.MonitorThresholds(), deps)
 	recordReceipt(rec)
 	return 0
 }
@@ -150,6 +175,7 @@ func readDirNames(dir string) []string {
 // watchEvent is the JSON line emitted per risk-level change with --json.
 type watchEvent struct {
 	At      time.Time `json:"at"`
+	Tool    string    `json:"tool"`
 	Level   string    `json:"level"`
 	Reasons []string  `json:"reasons"`
 	TotalMB int64     `json:"total_log_mb"`
@@ -158,7 +184,7 @@ type watchEvent struct {
 // runWatch is the loop, fully injected for tests. It samples once immediately
 // (the baseline), then once per tick, printing only when the risk LEVEL
 // changes — never per tick, so a quiet session stays quiet.
-func runWatch(w io.Writer, jsonOut bool, th monitor.Thresholds, deps watchDeps) recorder.Receipt {
+func runWatch(w io.Writer, jsonOut bool, label, toolName string, th monitor.Thresholds, deps watchDeps) recorder.Receipt {
 	var samples []monitor.Sample
 	var last monitor.Risk = -1 // sentinel: baseline always prints
 	peak := monitor.RiskLow
@@ -167,7 +193,7 @@ func runWatch(w io.Writer, jsonOut bool, th monitor.Thresholds, deps watchDeps) 
 	var firstTotal, lastTotal int64
 
 	observe := func() {
-		report := deps.scan()
+		total, wal := deps.scan()
 		mem, _ := deps.memory() // best-effort; 0 when unknown
 		running, _ := deps.running()
 		now := deps.now()
@@ -181,17 +207,11 @@ func runWatch(w io.Writer, jsonOut bool, th monitor.Thresholds, deps watchDeps) 
 			}
 		}
 		if len(samples) == 0 {
-			firstTotal = report.TotalBytes
+			firstTotal = total
 		}
-		lastTotal = report.TotalBytes
-		var wal int64
-		for _, f := range report.Files {
-			if f.Name == "logs_2.sqlite-wal" && f.Exists {
-				wal = f.Size
-			}
-		}
+		lastTotal = total
 		samples = monitor.AppendSample(samples, monitor.Sample{
-			At: now, TotalBytes: report.TotalBytes, WALBytes: wal, MemBytes: mem,
+			At: now, TotalBytes: total, WALBytes: wal, MemBytes: mem,
 		}, 20)
 		a := monitor.Evaluate(samples, running, th)
 		if a.RateMBPerMin > peakRate {
@@ -210,7 +230,7 @@ func runWatch(w io.Writer, jsonOut bool, th monitor.Thresholds, deps watchDeps) 
 			if reasons == nil {
 				reasons = []string{} // [] not null
 			}
-			line, _ := json.Marshal(watchEvent{At: now, Level: a.Level.String(), Reasons: reasons, TotalMB: report.TotalBytes / (1024 * 1024)})
+			line, _ := json.Marshal(watchEvent{At: now, Tool: toolName, Level: a.Level.String(), Reasons: reasons, TotalMB: total / (1024 * 1024)})
 			fmt.Fprintln(w, string(line))
 		} else {
 			msg := fmt.Sprintf("[%s] risk %s", now.Format("15:04:05"), a.Level)
@@ -220,9 +240,9 @@ func runWatch(w io.Writer, jsonOut bool, th monitor.Thresholds, deps watchDeps) 
 			fmt.Fprintln(w, msg)
 		}
 		if escalatedToAlarming {
-			body := "Codex disk/memory activity looks alarming."
+			body := label + " disk/memory activity looks alarming."
 			if len(a.Reasons) > 0 {
-				body = a.Reasons[0]
+				body = label + ": " + a.Reasons[0]
 			}
 			_ = deps.notify("CodexSSD: "+a.Level.String(), body) // fire-and-forget
 		}
@@ -243,8 +263,12 @@ func runWatch(w io.Writer, jsonOut bool, th monitor.Thresholds, deps watchDeps) 
 				fmt.Fprintf(w, "\nWatched for %s. Peak risk: %s. Log growth observed: %s.\n",
 					end.Sub(start).Round(time.Second), peak, codex.HumanBytes(growth))
 			}
+			action := "watch"
+			if toolName != "codex" {
+				action += " --tool " + toolName
+			}
 			return recorder.Receipt{
-				At: end, Action: "watch",
+				At: end, Action: action,
 				DurationSec:  end.Sub(start).Seconds(),
 				DiskWritten:  growth,
 				PeakMBPerMin: peakRate,

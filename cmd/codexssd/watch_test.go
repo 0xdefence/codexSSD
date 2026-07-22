@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/0xdefence/codexssd/internal/behavior"
-	"github.com/0xdefence/codexssd/internal/codex"
 	"github.com/0xdefence/codexssd/internal/config"
 	"github.com/0xdefence/codexssd/internal/monitor"
+	"github.com/0xdefence/codexssd/internal/recorder"
 )
 
 // scriptedDeps feeds a fixed sequence of readings, then closes stop.
@@ -23,12 +23,12 @@ func scriptedDeps(t *testing.T, totals []int64) (watchDeps, *[]string) {
 	var notified []string
 	base := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
 	deps := watchDeps{
-		scan: func() codex.LogReport {
-			r := codex.LogReport{DirExists: true, TotalBytes: totals[scanIdx]}
+		scan: func() (int64, int64) {
+			total := totals[scanIdx]
 			if scanIdx < len(totals)-1 {
 				scanIdx++
 			}
-			return r
+			return total, 0
 		},
 		memory:  func() (int64, error) { return 0, nil },
 		running: func() (bool, error) { return true, nil },
@@ -59,7 +59,7 @@ func TestRunWatchPrintsOnLevelChangeOnly(t *testing.T) {
 	// 0 → +200MB/min for two ticks: LOW baseline, then HIGH, then stays HIGH.
 	deps, notified := scriptedDeps(t, []int64{0, 200 << 20, 400 << 20})
 	var buf bytes.Buffer
-	rec := runWatch(&buf, false, monitor.DefaultThresholds(), deps)
+	rec := runWatch(&buf, false, "Codex", "codex", monitor.DefaultThresholds(), deps)
 
 	out := buf.String()
 	// Count the event-line form "risk HIGH" — the session summary says
@@ -78,7 +78,7 @@ func TestRunWatchPrintsOnLevelChangeOnly(t *testing.T) {
 func TestRunWatchNoNotifyBelowHigh(t *testing.T) {
 	deps, notified := scriptedDeps(t, []int64{0, 30 << 20}) // ~30MB/min → MEDIUM
 	var buf bytes.Buffer
-	runWatch(&buf, false, monitor.DefaultThresholds(), deps)
+	runWatch(&buf, false, "Codex", "codex", monitor.DefaultThresholds(), deps)
 	if len(*notified) != 0 {
 		t.Errorf("MEDIUM must not notify, got %v", *notified)
 	}
@@ -124,14 +124,8 @@ func scriptedDepsBaselineWAL(t *testing.T, totalBytes, walBytes int64) (watchDep
 	var notified []string
 	base := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
 	deps := watchDeps{
-		scan: func() codex.LogReport {
-			return codex.LogReport{
-				DirExists:  true,
-				TotalBytes: totalBytes,
-				Files: []codex.LogFile{
-					{Name: "logs_2.sqlite-wal", Exists: true, Size: walBytes},
-				},
-			}
+		scan: func() (int64, int64) {
+			return totalBytes, walBytes
 		},
 		memory:  func() (int64, error) { return 0, nil },
 		running: func() (bool, error) { return true, nil },
@@ -160,7 +154,7 @@ func TestRunWatchPrintsBehaviorEvents(t *testing.T) {
 		return []behavior.Event{{Time: now, Tool: "codex", Entry: "cache-v2"}}
 	}
 	var buf bytes.Buffer
-	runWatch(&buf, false, monitor.DefaultThresholds(), deps)
+	runWatch(&buf, false, "Codex", "codex", monitor.DefaultThresholds(), deps)
 
 	out := buf.String()
 	want := `noticed: "cache-v2" appeared in ~/.codex while Codex was running`
@@ -175,7 +169,7 @@ func TestRunWatchPrintsBehaviorEvents(t *testing.T) {
 func TestRunWatchNilObserveBehaviorIsSafe(t *testing.T) {
 	deps, _ := scriptedDeps(t, []int64{0, 200 << 20, 400 << 20})
 	var buf bytes.Buffer
-	rec := runWatch(&buf, false, monitor.DefaultThresholds(), deps)
+	rec := runWatch(&buf, false, "Codex", "codex", monitor.DefaultThresholds(), deps)
 	if rec.Action != "watch" {
 		t.Errorf("nil observeBehavior should not disturb the loop; receipt = %+v", rec)
 	}
@@ -186,7 +180,7 @@ func TestRunWatchBaselineHighWALNotifiesOnce(t *testing.T) {
 	// WAL at exactly the HIGH threshold on the very first (baseline) sample.
 	deps, notified := scriptedDepsBaselineWAL(t, 0, th.HighWALSizeMB*1024*1024)
 	var buf bytes.Buffer
-	runWatch(&buf, false, th, deps)
+	runWatch(&buf, false, "Codex", "codex", th, deps)
 
 	out := buf.String()
 	if strings.Count(out, "risk HIGH") != 1 {
@@ -195,4 +189,72 @@ func TestRunWatchBaselineHighWALNotifiesOnce(t *testing.T) {
 	if len(*notified) != 1 {
 		t.Errorf("want exactly one notification for a baseline-HIGH sample, got %v", *notified)
 	}
+}
+
+// TestRunWatchClaudeToolLabels pins the tool-aware surfaces: the JSON "tool"
+// field, the display name in notification bodies, and the receipt Action.
+func TestRunWatchClaudeToolLabels(t *testing.T) {
+	base := time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC)
+	tick := make(chan time.Time, 1)
+	stop := make(chan struct{})
+	var notified []string
+	sizes := []int64{0, 600 * 1024 * 1024} // 600 MiB in one 30s tick → alarming rate
+	step := 0
+	now := base
+	// sampled synchronizes on the baseline observe() round finishing its
+	// reads of step/now: runWatch's baseline sample runs in its own
+	// goroutine with no other happens-before edge to this goroutine, so
+	// without this signal the mutations below race ahead of that read.
+	// runWatch calls deps.now() once for its own "start" timestamp before
+	// the first observe() round, so the first call is skipped — only the
+	// now() call inside observe() (which runs after that round's scan())
+	// signals readiness.
+	sampled := make(chan struct{}, 1)
+	nowCalls := 0
+	deps := watchDeps{
+		scan:    func() (int64, int64) { s := sizes[step]; return s, 0 },
+		memory:  func() (int64, error) { return 0, nil },
+		running: func() (bool, error) { return true, nil },
+		notify:  func(title, body string) error { notified = append(notified, body); return nil },
+		now: func() time.Time {
+			n := now
+			nowCalls++
+			if nowCalls > 1 {
+				select {
+				case sampled <- struct{}{}:
+				default:
+				}
+			}
+			return n
+		},
+		tick: tick,
+		stop: stop,
+	}
+	var out strings.Builder
+	done := make(chan recorder.Receipt, 1)
+	go func() { done <- runWatch(&out, true, "Claude Code", "claude", testThresholds(), deps) }()
+	<-sampled // wait for the baseline observe() round to finish reading step/now
+	// advance one tick with a huge write burst
+	step = 1
+	now = base.Add(30 * time.Second)
+	tick <- now
+	// let the observe goroutine drain, then stop
+	time.Sleep(50 * time.Millisecond)
+	close(stop)
+	rec := <-done
+
+	if !strings.Contains(out.String(), `"tool":"claude"`) {
+		t.Fatalf("json output missing tool field:\n%s", out.String())
+	}
+	if len(notified) == 0 || !strings.Contains(notified[0], "Claude Code") {
+		t.Fatalf("notification body should name Claude Code, got %q", notified)
+	}
+	if rec.Action != "watch --tool claude" {
+		t.Fatalf("receipt Action = %q, want %q", rec.Action, "watch --tool claude")
+	}
+}
+
+func testThresholds() monitor.Thresholds {
+	return monitor.Thresholds{MediumMBPerMin: 25, HighMBPerMin: 100, CriticalMBPerMin: 500,
+		HighWALSizeMB: 1024, CriticalWALSizeMB: 8192, HighMemMB: 2048, CriticalMemMB: 6144}
 }

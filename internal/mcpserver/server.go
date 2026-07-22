@@ -103,7 +103,7 @@ func (s *Server) handle(req rpcRequest) (rpcResponse, bool) {
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			return fail(-32602, "invalid params")
 		}
-		text, err := s.callTool(params.Name)
+		text, err := s.callTool(params.Name, params.Arguments)
 		if err != nil {
 			return fail(-32602, err.Error())
 		}
