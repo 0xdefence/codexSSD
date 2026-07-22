@@ -39,7 +39,7 @@ Usage:
 Commands:
   status         Show Codex's log files and their sizes (read-only)
   report         Show what's using disk inside ~/.codex (read-only)
-  watch          Watch a running Codex agent and warn on risky activity
+  watch          Watch a running agent and warn on risky activity
   clean          Move Codex's own logs aside into a recoverable recycling bin
   restore        Move previously cleaned logs back from the recycling bin
   prune          Release recycling-bin backups past their ~2-week hold to the Trash
